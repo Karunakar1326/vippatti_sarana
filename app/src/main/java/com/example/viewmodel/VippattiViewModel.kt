@@ -6,7 +6,13 @@ import com.example.data.EmergencyContact
 import com.example.data.GoBagItem
 import com.example.data.MockDisasterRepository
 import com.example.data.PilotRegionData
+import com.example.data.UserProfile
 import com.example.data.WeatherMetrics
+import com.example.data.reports.EmergencyReport
+import com.example.data.reports.EmergencyReportService
+import com.example.data.reports.NdrfEmergencyReportService
+import com.example.data.reports.ReportKind
+import com.example.data.reports.ReportReceipt
 import com.example.data.model.HazardZone
 import com.example.data.model.SafeZone
 import com.example.data.routing.GeoPoint
@@ -64,6 +70,16 @@ data class VippattiUiState(
   val isFlashlightOn: Boolean = false,
   val isSirenOn: Boolean = false,
   val contactsList: List<EmergencyContact> = MockDisasterRepository.emergencyContacts,
+
+  // --- Editable citizen profile + REAL device battery (replaces hardcoded 84%) ---
+  val userProfile: UserProfile = UserProfile(),
+  val showEditProfileDialog: Boolean = false,
+  val batteryPercent: Int? = null,
+  val isBatteryCharging: Boolean = false,
+  val showSosConfirmDialog: Boolean = false,
+  val showSituationReportDialog: Boolean = false,
+  val isSubmittingReport: Boolean = false,
+  val lastReportReceipt: ReportReceipt? = null,
   val weather: WeatherMetrics = WeatherMetrics(),
   val snackbarMessage: String? = null,
 
@@ -93,9 +109,33 @@ data class VippattiUiState(
   // --- Detail sheets ---
   val hazardDetailZone: HazardZone? = null,
   val safeZoneDetail: SafeZone? = null
-)
+) {
 
-class VippattiViewModel : ViewModel() {
+  // --- Derived broadcast labels (REAL battery/GPS/relays - no hardcoded 84%) ---
+  /** Live device battery reading for SOS/report payloads - replaces the demo 84%. */
+  val batteryLabel: String
+    get() = batteryPercent?.let { percent ->
+      "$percent%" + if (isBatteryCharging) " (Charging)" else " (Discharging)"
+    } ?: "Reading device battery..."
+
+  /** Real coordinates (GPS fix or pilot fallback) shown in the SOS dialogs. */
+  val sosLocationLabel: String
+    get() = String.format(
+      "%.4f N, %.4f E (%s)",
+      userLocation.lat,
+      userLocation.lon,
+      if (isUserLocationFallback) "FALLBACK" else "LIVE GPS"
+    )
+
+  /** Relay targets for a distress broadcast: NDRF 112 + kin contact count. */
+  val priorityRelaysLabel: String
+    get() = "NDRF 112 & " + contactsList.size + " Kin Contacts"
+}
+
+class VippattiViewModel(
+  /** Emergency report gateway — NDRF pilot simulation by default, swappable. */
+  private val reportService: EmergencyReportService = NdrfEmergencyReportService()
+) : ViewModel() {
 
   private val _uiState = MutableStateFlow(VippattiUiState())
   val uiState: StateFlow<VippattiUiState> = _uiState.asStateFlow()
@@ -137,12 +177,16 @@ class VippattiViewModel : ViewModel() {
     val ctx = SafeZoneEvaluator.RequestContext(
       origin = location,
       hazards = hazards,
-      hasVulnerableMembers = true, // pilot household profile includes elderly + child
-      needsMedicalSupport = false
+      hasVulnerableMembers = state.userProfile.vulnerableCategoryIds.isNotEmpty(),
+      needsMedicalSupport = state.userProfile.needsMedicalSupport
     )
     val ranked = SafeZoneEvaluator.ranked(zones, ctx)
     val action = ActionAdvisor.recommend(risk, ranked)
-    val plan = RelocationPlanner.plan(risk, ranked, vulnerableCategoryIds = setOf("elderly", "children"))
+    val plan = RelocationPlanner.plan(
+      risk,
+      ranked,
+      vulnerableCategoryIds = state.userProfile.vulnerableCategoryIds
+    )
 
     _uiState.update {
       it.copy(
@@ -397,20 +441,28 @@ class VippattiViewModel : ViewModel() {
   // ================================================== SAFETY / SOS / TOOLS
 
   fun setUserSafety(isSafe: Boolean) {
+    if (!isSafe) {
+      // NEED ASSISTANCE arms a distress broadcast - an explicit "Are you
+      // sure?" confirmation is required before anything is transmitted.
+      _uiState.update { it.copy(showSosConfirmDialog = true) }
+      return
+    }
     _uiState.update {
       it.copy(
-        userIsSafe = isSafe,
-        snackbarMessage = if (isSafe) "Status updated: Marked as SAFE on SARANA network" else "Assistance requested: Alert pinged to NDRF ward dispatcher"
+        userIsSafe = true,
+        snackbarMessage = "Status updated: Marked as SAFE on SARANA network"
       )
     }
   }
 
+  /**
+   * Any SOS entry point (radar SOS icon, hero broadcast button, NEED
+   * ASSISTANCE switch) first opens the "Are you sure?" confirmation gate -
+   * nothing is broadcast until the user explicitly confirms.
+   */
   fun triggerSosBroadcast() {
     _uiState.update {
-      it.copy(
-        showSosBroadcastDialog = true,
-        isSosActive = true
-      )
+      it.copy(showSosConfirmDialog = true)
     }
   }
 
@@ -426,6 +478,62 @@ class VippattiViewModel : ViewModel() {
         snackbarMessage = "SOS emergency broadcast canceled"
       )
     }
+  }
+
+  fun dismissSosConfirmDialog() {
+    _uiState.update { it.copy(showSosConfirmDialog = false) }
+  }
+
+  /**
+   * Confirms the "Are you sure?" gate: arms the live SOS broadcast and files
+   * the corresponding NDRF distress report through EmergencyReportService.
+   */
+  fun confirmSosBroadcast() {
+    _uiState.update {
+      it.copy(
+        showSosConfirmDialog = false,
+        showSosBroadcastDialog = true,
+        isSosActive = true,
+        userIsSafe = false
+      )
+    }
+    val profile = _uiState.value.userProfile
+    submitEmergencyReport(
+      ReportKind.SOS_BROADCAST,
+      message = "NEED ASSISTANCE - SOS distress broadcast from ${profile.fullName}" +
+        (if (profile.medicalTag.isNotBlank()) " | Medical tag: ${profile.medicalTag}" else "")
+    )
+  }
+
+  // =========================== PROFILE / BATTERY ===========================
+
+  fun openEditProfileDialog() {
+    _uiState.update { it.copy(showEditProfileDialog = true) }
+  }
+
+  fun closeEditProfileDialog() {
+    _uiState.update { it.copy(showEditProfileDialog = false) }
+  }
+
+  /**
+   * Saves the edited citizen profile. Vulnerable categories and the medical
+   * flag change shelter ranking and the relocation priority band, so the
+   * intelligence pipeline is re-run immediately.
+   */
+  fun updateUserProfile(profile: UserProfile) {
+    _uiState.update {
+      it.copy(
+        userProfile = profile,
+        showEditProfileDialog = false,
+        snackbarMessage = "Profile saved: ${profile.fullName} | ${profile.bloodGroupLabel} | ${profile.dependentsLabel}"
+      )
+    }
+    recomputeIntelligence()
+  }
+
+  /** Real device battery reading pushed by the BatteryManager receiver in MainActivity. */
+  fun onBatteryChanged(percent: Int, isCharging: Boolean) {
+    _uiState.update { it.copy(batteryPercent = percent, isBatteryCharging = isCharging) }
   }
 
   fun toggleFlashlight() {
@@ -451,6 +559,73 @@ class VippattiViewModel : ViewModel() {
       sirenJob = viewModelScope.launch {
         delay(60000)
         _uiState.update { it.copy(isSirenOn = false) }
+      }
+    }
+  }
+
+  // ======================= SITUATION REPORTS (NDRF) ========================
+
+  /** Opens the "Report My Situation" voice/form/photo reporter. */
+  fun openSituationReportDialog() {
+    _uiState.update { it.copy(showSituationReportDialog = true) }
+  }
+
+  fun closeSituationReportDialog() {
+    _uiState.update { it.copy(showSituationReportDialog = false) }
+  }
+
+  /**
+   * Submits the citizen's situation report (voice/typed description +
+   * optional photo evidence) through the EmergencyReportService to the
+   * NDRF ward dispatcher.
+   */
+  fun submitSituationReport(message: String, photoUri: String?) {
+    if (message.isBlank()) {
+      _uiState.update {
+        it.copy(snackbarMessage = "Describe your situation (type or dictate) before reporting")
+      }
+      return
+    }
+    _uiState.update {
+      it.copy(showSituationReportDialog = false, isSubmittingReport = true)
+    }
+    submitEmergencyReport(ReportKind.SITUATION_REPORT, message.trim(), photoUri)
+  }
+
+  /** Shared NDRF funnel for SOS broadcasts and situation reports. */
+  private fun submitEmergencyReport(kind: ReportKind, message: String, photoUri: String? = null) {
+    val snapshot = _uiState.value
+    val profile = snapshot.userProfile
+    viewModelScope.launch {
+      val receipt = try {
+        reportService.submit(
+          EmergencyReport(
+            kind = kind,
+            reporterId = profile.citizenId,
+            reporterName = profile.fullName,
+            message = message,
+            photoUri = photoUri,
+            location = snapshot.userLocation,
+            batteryPercent = snapshot.batteryPercent,
+            isCharging = snapshot.isBatteryCharging,
+            medicalTag = profile.medicalTag
+          )
+        )
+      } catch (e: Exception) {
+        ReportReceipt(
+          reportId = "NDRF-ERR",
+          accepted = false,
+          relayChannel = NdrfEmergencyReportService.RELAY_CHANNEL,
+          etaMinutes = null,
+          note = "Report failed: ${e.message ?: "dispatcher unreachable"}"
+        )
+      }
+      _uiState.update {
+        it.copy(
+          isSubmittingReport = false,
+          lastReportReceipt = receipt,
+          snackbarMessage = receipt.note
+        )
       }
     }
   }

@@ -70,6 +70,10 @@ import com.example.ui.theme.WarningAmber
 
 @Composable
 fun SosBroadcastDialog(
+  locationLabel: String,
+  batteryLabel: String,
+  medicalTagLabel: String,
+  relaysLabel: String,
   onDismiss: () -> Unit,
   onCancelSos: () -> Unit
 ) {
@@ -155,28 +159,28 @@ fun SosBroadcastDialog(
             horizontalArrangement = Arrangement.SpaceBetween
           ) {
             Text("GPS Location", fontSize = 12.sp, color = TacticalOnSurfaceVariant)
-            Text("9.8478? N, 76.9422? E (PILOT)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = NeonEmerald)
+            Text(locationLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = NeonEmerald)
           }
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
           ) {
             Text("Battery Level", fontSize = 12.sp, color = TacticalOnSurfaceVariant)
-            Text("84% (Low Drain Mode)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
+            Text(batteryLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
           }
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
           ) {
             Text("Medical Tag", fontSize = 12.sp, color = TacticalOnSurfaceVariant)
-            Text("Asthma / Mobility Support", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TacticalCyan)
+            Text(medicalTagLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TacticalCyan)
           }
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
           ) {
             Text("Priority Relays", fontSize = 12.sp, color = TacticalOnSurfaceVariant)
-            Text("NDRF 112 & 3 Kin Contacts", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
+            Text(relaysLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
           }
         }
 
@@ -721,3 +725,111 @@ private fun InfoLine(label: String, value: String) {
     Text(value, fontSize = 11.sp, color = TacticalOnSurface)
   }
 }
+
+// ============================================================================
+// SOS CONFIRM GATE - the "Are you sure?" dialog shown before any distress
+// broadcast is actually transmitted (radar SOS icon, hero broadcast button,
+// NEED ASSISTANCE switch all route through here).
+// ============================================================================
+
+@Composable
+fun SosConfirmDialog(
+  locationLabel: String,
+  batteryLabel: String,
+  onConfirm: () -> Unit,
+  onDismiss: () -> Unit
+) {
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(
+      shape = RoundedCornerShape(24.dp),
+      color = ObsidianSurface,
+      modifier = Modifier
+        .fillMaxWidth()
+        .border(2.dp, EmergencyRed, RoundedCornerShape(24.dp))
+    ) {
+      Column(
+        modifier = Modifier
+          .padding(24.dp)
+          .fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally
+      ) {
+        Icon(
+          imageVector = Icons.Default.Warning,
+          contentDescription = null,
+          tint = EmergencyRed,
+          modifier = Modifier.size(48.dp)
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Text(
+          text = "BROADCAST SOS DISTRESS SIGNAL?",
+          fontSize = 16.sp,
+          fontWeight = FontWeight.Black,
+          color = EmergencyRed,
+          letterSpacing = 0.5.sp
+        )
+
+        Text(
+          text = "Are you sure? This will transmit your live location, device battery and medical tags to the NDRF 112 ward dispatcher and your emergency kin network.",
+          fontSize = 12.sp,
+          color = TacticalOnSurfaceVariant,
+          lineHeight = 16.sp,
+          modifier = Modifier.padding(top = 6.dp)
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .background(ObsidianContainerLow, RoundedCornerShape(16.dp))
+            .border(1.dp, TacticalOutlineVariant, RoundedCornerShape(16.dp))
+            .padding(14.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+          ) {
+            Text("GPS Location", fontSize = 12.sp, color = TacticalOnSurfaceVariant)
+            Text(locationLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = NeonEmerald)
+          }
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+          ) {
+            Text("Battery Level", fontSize = 12.sp, color = TacticalOnSurfaceVariant)
+            Text(batteryLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
+          }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        Button(
+          onClick = onConfirm,
+          colors = ButtonDefaults.buttonColors(containerColor = EmergencyRed),
+          shape = RoundedCornerShape(14.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .testTag("sos_confirm_button")
+        ) {
+          Text("YES - BROADCAST NOW", fontWeight = FontWeight.Black, color = Color.White)
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        TextButton(
+          onClick = onDismiss,
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("sos_confirm_cancel_button")
+        ) {
+          Text("CANCEL - I AM SAFE", color = TacticalOnSurfaceVariant, fontSize = 13.sp)
+        }
+      }
+    }
+  }
+}
+

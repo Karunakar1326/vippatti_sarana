@@ -1,6 +1,10 @@
 package com.example
 
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -29,10 +33,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.components.AddContactDialog
+import com.example.ui.components.EditProfileDialog
+import com.example.ui.components.SituationReportDialog
 import com.example.ui.components.InteractiveBagDialog
 import com.example.ui.components.HazardZoneDetailDialog
 import com.example.ui.components.SafeZoneDetailDialog
 import com.example.ui.components.SosBroadcastDialog
+import com.example.ui.components.SosConfirmDialog
 import com.example.ui.components.VippattiBottomNavBar
 import com.example.ui.screens.DispatchesScreen
 import com.example.ui.screens.InstructionsScreen
@@ -70,6 +77,26 @@ fun VippattiAppRoot(
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
   val snackbarHostState = remember { SnackbarHostState() }
   val context = LocalContext.current
+
+  // REAL device battery level — replaces the demo "84% (Low Drain Mode)".
+  // Sticky ACTION_BATTERY_CHANGED broadcast gives an immediate reading.
+  DisposableEffect(Unit) {
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(context: Context?, intent: Intent?) {
+        val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        if (level >= 0 && scale > 0) {
+          val percent = (level * 100 / scale).coerceIn(0, 100)
+          val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
+          viewModel.onBatteryChanged(percent, charging)
+        }
+      }
+    }
+    context.registerReceiver(receiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+    onDispose { context.unregisterReceiver(receiver) }
+  }
 
   // Real Hardware Flashlight Controller
   LaunchedEffect(uiState.isFlashlightOn) {
@@ -191,14 +218,50 @@ fun VippattiAppRoot(
             onToggleTheme = { viewModel.toggleTheme() },
             onSetSafety = { viewModel.setUserSafety(it) },
             onBroadcastSos = { viewModel.triggerSosBroadcast() },
-            onOpenAddContact = { viewModel.openAddContactDialog() }
+            onOpenAddContact = { viewModel.openAddContactDialog() },
+            onOpenEditProfile = { viewModel.openEditProfileDialog() },
+            onOpenSituationReport = { viewModel.openSituationReportDialog() }
           )
         }
       }
 
       // Modal Dialogs
+      // Modal Dialogs
+      // SOS confirmation gate — nothing is broadcast before an explicit YES.
+      if (uiState.showSosConfirmDialog) {
+        SosConfirmDialog(
+          locationLabel = uiState.sosLocationLabel,
+          batteryLabel = uiState.batteryLabel,
+          onConfirm = { viewModel.confirmSosBroadcast() },
+          onDismiss = { viewModel.dismissSosConfirmDialog() }
+        )
+      }
+
+      if (uiState.showEditProfileDialog) {
+        EditProfileDialog(
+          profile = uiState.userProfile,
+          onDismiss = { viewModel.closeEditProfileDialog() },
+          onSave = { viewModel.updateUserProfile(it) }
+        )
+      }
+
+      if (uiState.showSituationReportDialog) {
+        SituationReportDialog(
+          reporterName = uiState.userProfile.fullName,
+          locationLabel = uiState.sosLocationLabel,
+          batteryLabel = uiState.batteryLabel,
+          isSubmitting = uiState.isSubmittingReport,
+          onDismiss = { viewModel.closeSituationReportDialog() },
+          onSubmit = { message, photoUri -> viewModel.submitSituationReport(message, photoUri) }
+        )
+      }
+
       if (uiState.showSosBroadcastDialog) {
         SosBroadcastDialog(
+          locationLabel = uiState.sosLocationLabel,
+          batteryLabel = uiState.batteryLabel,
+          medicalTagLabel = uiState.userProfile.medicalTag,
+          relaysLabel = uiState.priorityRelaysLabel,
           onDismiss = { viewModel.dismissSosDialog() },
           onCancelSos = { viewModel.cancelSosBroadcast() }
         )

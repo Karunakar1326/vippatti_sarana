@@ -9,6 +9,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.CrisisAlert
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Emergency
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.HolidayVillage
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.compose.material.icons.filled.MedicalInformation
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Pets
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
@@ -56,6 +59,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -94,6 +98,8 @@ fun ProfileScreen(
   onSetSafety: (Boolean) -> Unit,
   onBroadcastSos: () -> Unit,
   onOpenAddContact: () -> Unit,
+  onOpenEditProfile: () -> Unit,
+  onOpenSituationReport: () -> Unit,
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
@@ -307,6 +313,34 @@ fun ProfileScreen(
               letterSpacing = 0.4.sp
             )
           }
+
+          // REPORT MY SITUATION — voice/form/photo channel to the NDRF
+          // dispatcher. Deliberately separate from the SOS broadcast: no
+          // distress signal is armed, no confirmation gate required.
+          OutlinedButton(
+            onClick = onOpenSituationReport,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.6f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(44.dp)
+              .testTag("report_situation_hero_button")
+          ) {
+            Icon(
+              imageVector = Icons.Default.RecordVoiceOver,
+              contentDescription = null,
+              tint = Color.White,
+              modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = "REPORT MY SITUATION",
+              fontSize = 12.sp,
+              fontWeight = FontWeight.Bold,
+              letterSpacing = 0.4.sp
+            )
+          }
         }
       }
     }
@@ -367,7 +401,7 @@ fun ProfileScreen(
                   horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                   Text(
-                    text = "Aditya Vardhan",
+                    text = uiState.userProfile.fullName,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = TacticalOnSurface
@@ -380,7 +414,7 @@ fun ProfileScreen(
                   )
                 }
                 Text(
-                  text = "ID: SARANA-AP-89241",
+                  text = "ID: ${uiState.userProfile.citizenId}",
                   fontSize = 12.sp,
                   color = TacticalOnSurfaceVariant
                 )
@@ -395,10 +429,28 @@ fun ProfileScreen(
                 .padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
               Text(
-                text = "O+ POSITIVE",
+                text = uiState.userProfile.bloodGroupLabel,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Black,
                 color = EmergencyRedBright
+              )
+            }
+
+            // Edit Profile — opens the editable citizen identity dialog
+            IconButton(
+              onClick = onOpenEditProfile,
+              modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(ObsidianContainer)
+                .border(1.dp, TacticalOutlineVariant.copy(alpha = 0.4f), CircleShape)
+                .testTag("profile_edit_button")
+            ) {
+              Icon(
+                imageVector = Icons.Default.Edit,
+                contentDescription = "Edit Profile",
+                tint = TacticalCyan,
+                modifier = Modifier.size(15.dp)
               )
             }
           }
@@ -488,9 +540,9 @@ fun ProfileScreen(
                 modifier = Modifier.padding(top = 2.dp)
               ) {
                 Icon(Icons.Default.Group, contentDescription = null, tint = EmergencyRedBright, modifier = Modifier.size(16.dp))
-                Text("3 Dependents", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
+                Text(uiState.userProfile.dependentsLabel, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
               }
-              Text("1 Elder, 1 Child (4yo), Spouse", fontSize = 10.sp, color = TacticalOnSurfaceVariant)
+              Text(uiState.userProfile.dependentsDetail, fontSize = 10.sp, color = TacticalOnSurfaceVariant)
             }
 
             // Medical
@@ -510,9 +562,9 @@ fun ProfileScreen(
                 modifier = Modifier.padding(top = 2.dp)
               ) {
                 Icon(Icons.Default.MedicalInformation, contentDescription = null, tint = WarningAmber, modifier = Modifier.size(16.dp))
-                Text("Asthma / Inhaler", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
+                Text(uiState.userProfile.medicalTag, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
               }
-              Text("Requires Mobility Support", fontSize = 10.sp, color = TacticalOnSurfaceVariant)
+              Text(uiState.userProfile.medicalNotes, fontSize = 10.sp, color = TacticalOnSurfaceVariant)
             }
           }
         }
