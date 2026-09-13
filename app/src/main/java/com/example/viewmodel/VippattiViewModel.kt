@@ -1,0 +1,518 @@
+﻿package com.example.viewmodel
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.data.EmergencyContact
+import com.example.data.GoBagItem
+import com.example.data.MockDisasterRepository
+import com.example.data.PilotRegionData
+import com.example.data.WeatherMetrics
+import com.example.data.model.HazardZone
+import com.example.data.model.SafeZone
+import com.example.data.routing.GeoPoint
+import com.example.data.routing.OsrmRoutingService
+import com.example.data.routing.RouteResult
+import com.example.data.routing.RouteStep
+import com.example.data.risk.ActionAdvisor
+import com.example.data.risk.PersonalRiskAssessment
+import com.example.data.risk.RecommendedAction
+import com.example.data.risk.RelocationPlan
+import com.example.data.risk.RelocationPlanner
+import com.example.data.risk.RiskAssessmentEngine
+import com.example.data.shelters.SafeZoneEvaluation
+import com.example.data.shelters.SafeZoneEvaluator
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+enum class ScreenTab {
+  RADAR_MAP,
+  NEWS_DISPATCHES,
+  INSTRUCTIONS,
+  PROFILE
+}
+
+/**
+ * Central UI state. All intelligence results flow into this single state,
+ * preserving the single primary flow:
+ *   Compose UI -> ViewModel -> Repository/Services -> Location ->
+ *   Hazard/Safe-Zone Intelligence -> OSRM Routing -> OSMDroid Map
+ */
+data class VippattiUiState(
+  // --- App chrome ---
+  val currentTab: ScreenTab = ScreenTab.RADAR_MAP,
+  val isDarkTheme: Boolean = true,
+  val is100PercentOfflineCached: Boolean = true,
+  val lastSyncTime: String = "Today at 08:42 AM • Emergency SMS live",
+  val isSyncing: Boolean = false,
+  val isAudioPlaying: Boolean = false,
+  val audioPlaybackSeconds: Int = 0,
+  val selectedNewsCategory: String = "All",
+  val goBagItems: List<GoBagItem> = MockDisasterRepository.defaultGoBagItems,
+  val userIsSafe: Boolean = true,
+  val isSosActive: Boolean = false,
+  val showSosBroadcastDialog: Boolean = false,
+  val showInteractiveBagDialog: Boolean = false,
+  val showAddContactDialog: Boolean = false,
+  val isFlashlightOn: Boolean = false,
+  val isSirenOn: Boolean = false,
+  val contactsList: List<EmergencyContact> = MockDisasterRepository.emergencyContacts,
+  val weather: WeatherMetrics = WeatherMetrics(),
+  val snackbarMessage: String? = null,
+
+  // --- Location (REAL GPS preferred; labeled India fallback otherwise) ---
+  val userLocation: GeoPoint = PilotRegionData.FALLBACK_USER_LOCATION,
+  /** true -> location is the static India fallback; false -> REAL GPS fix. */
+  val isUserLocationFallback: Boolean = true,
+
+  // --- Intelligence results (recomputed on every location change) ---
+  val hazardZones: List<HazardZone> = PilotRegionData.hazardZones,
+  val safeZones: List<SafeZone> = PilotRegionData.safeZones,
+  val personalRisk: PersonalRiskAssessment? = null,
+  val recommendedAction: RecommendedAction? = null,
+  val rankedShelters: List<SafeZoneEvaluation> = emptyList(),
+  val relocationPlan: RelocationPlan? = null,
+
+  // --- Routing ---
+  val selectedSafeZone: SafeZone? = null,
+  val selectedEvaluation: SafeZoneEvaluation? = null,
+  val activeRoute: RouteResult? = null,
+  val alternativeRoutes: List<RouteResult> = emptyList(),
+  val isCalculatingRoute: Boolean = false,
+  val travelMode: String = "foot", // "foot" or "driving"
+  val isNavigatingLive: Boolean = false,
+  val currentNavigationStepIndex: Int = 0,
+
+  // --- Detail sheets ---
+  val hazardDetailZone: HazardZone? = null,
+  val safeZoneDetail: SafeZone? = null
+)
+
+class VippattiViewModel : ViewModel() {
+
+  private val _uiState = MutableStateFlow(VippattiUiState())
+  val uiState: StateFlow<VippattiUiState> = _uiState.asStateFlow()
+
+  private var audioJob: Job? = null
+  private var sirenJob: Job? = null
+  private var routingJob: Job? = null
+
+  init {
+    // Run the full intelligence pipeline once on the fallback location so the
+    // map opens with risk, ranked shelters and a recommendation immediately.
+    recomputeIntelligence(selectInitialShelter = true)
+  }
+
+  // ============================================================ INTELLIGENCE
+
+  /**
+   * The heart of the decision pipeline:
+   * GPS/fallback location -> hazard analysis -> safe-zone discovery ->
+   * capacity check -> ranked options -> personal risk -> recommended action ->
+   * relocation plan -> evacuation route.
+   */
+  private fun recomputeIntelligence(selectInitialShelter: Boolean = false) {
+    val state = _uiState.value
+    val location = state.userLocation
+    val hazards = state.hazardZones
+    val zones = state.safeZones
+
+    val risk = RiskAssessmentEngine.assess(
+      location = location,
+      hazards = hazards,
+      provenanceNote = if (state.isUserLocationFallback) {
+        "Location: India fallback (Painavu) • Hazards: simulated pilot data"
+      } else {
+        "Location: device GPS • Hazards: simulated pilot data"
+      }
+    )
+
+    val ctx = SafeZoneEvaluator.RequestContext(
+      origin = location,
+      hazards = hazards,
+      hasVulnerableMembers = true, // pilot household profile includes elderly + child
+      needsMedicalSupport = false
+    )
+    val ranked = SafeZoneEvaluator.ranked(zones, ctx)
+    val action = ActionAdvisor.recommend(risk, ranked)
+    val plan = RelocationPlanner.plan(risk, ranked, vulnerableCategoryIds = setOf("elderly", "children"))
+
+    _uiState.update {
+      it.copy(
+        personalRisk = risk,
+        rankedShelters = ranked,
+        recommendedAction = action,
+        relocationPlan = plan
+      )
+    }
+
+    if (selectInitialShelter) {
+      val initial = ranked.firstOrNull()?.zone
+      if (initial != null) {
+        selectSafeZone(initial, autoRoute = true)
+      }
+    }
+  }
+
+  /**
+   * Applies a REAL hardware GPS fix (reported by the osmdroid location overlay).
+   * Real fixes replace the static India fallback and re-run every decision.
+   */
+  fun applyRealGpsFix(latitude: Double, longitude: Double) {
+    val state = _uiState.value
+    if (state.isUserLocationFallback || state.userLocation.lat != latitude || state.userLocation.lon != longitude) {
+      _uiState.update {
+        it.copy(
+          userLocation = GeoPoint(latitude, longitude),
+          isUserLocationFallback = false
+        )
+      }
+      recomputeIntelligence()
+      if (_uiState.value.selectedSafeZone != null) calculateRouteToSelectedZone()
+    }
+  }
+
+  // ================================================================ ROUTING
+
+  /** Selects a safe zone (usually from the ranked list or a map tap). */
+  fun selectSafeZone(zone: SafeZone, autoRoute: Boolean = true) {
+    val evaluation = _uiState.value.rankedShelters.firstOrNull { it.zone.id == zone.id }
+    _uiState.update {
+      it.copy(
+        selectedSafeZone = zone,
+        selectedEvaluation = evaluation,
+        safeZoneDetail = null,
+        currentNavigationStepIndex = 0
+      )
+    }
+    if (autoRoute) calculateRouteToSelectedZone()
+  }
+
+  fun calculateRouteToSelectedZone() {
+    val zone = _uiState.value.selectedSafeZone ?: return
+    routingJob?.cancel()
+    routingJob = viewModelScope.launch {
+      _uiState.update { it.copy(isCalculatingRoute = true) }
+      val result = OsrmRoutingService.calculateRoute(
+        origin = _uiState.value.userLocation,
+        destination = zone.point,
+        mode = _uiState.value.travelMode,
+        hazards = _uiState.value.hazardZones,
+        destinationName = zone.name
+      )
+      _uiState.update {
+        it.copy(
+          isCalculatingRoute = false,
+          activeRoute = result,
+          currentNavigationStepIndex = 0
+        )
+      }
+    }
+  }
+
+  /**
+   * Computes alternative corridors to the selected shelter so the user can
+   * compare safety vs distance.
+   */
+  fun loadAlternativeRoutes() {
+    val zone = _uiState.value.selectedSafeZone ?: return
+    routingJob?.cancel()
+    routingJob = viewModelScope.launch {
+      _uiState.update { it.copy(isCalculatingRoute = true) }
+      val alternatives = OsrmRoutingService.calculateAlternativeRoutes(
+        origin = _uiState.value.userLocation,
+        destination = zone.point,
+        mode = _uiState.value.travelMode,
+        hazards = _uiState.value.hazardZones,
+        destinationName = zone.name,
+        maxAlternatives = 2
+      )
+      _uiState.update {
+        it.copy(
+          isCalculatingRoute = false,
+          activeRoute = alternatives.firstOrNull() ?: it.activeRoute,
+          alternativeRoutes = alternatives
+        )
+      }
+    }
+  }
+
+  /** OSMDroid map reports a freshly computed corridor. */
+  fun onOsmRouteUpdated(distanceKm: Double, durationMins: Int, summary: String, isLive: Boolean) {
+    _uiState.update { state ->
+      val merged = state.activeRoute?.let { existing ->
+        existing.copy(
+          distanceMeters = distanceKm * 1000.0,
+          durationSeconds = durationMins * 60.0,
+          isLiveOsrm = isLive,
+          summary = summary,
+          travelMode = state.travelMode
+        )
+      } ?: RouteResult(
+        distanceMeters = distanceKm * 1000.0,
+        durationSeconds = durationMins * 60.0,
+        pathPoints = emptyList(),
+        steps = listOf(RouteStep("Follow evacuation corridor to destination", distanceKm * 1000.0, durationMins * 60.0)),
+        isLiveOsrm = isLive,
+        summary = summary,
+        travelMode = state.travelMode
+      )
+      state.copy(
+        activeRoute = merged,
+        snackbarMessage = "Corridor computed: ${String.format("%.2f", distanceKm)} km • $durationMins mins ($summary)"
+      )
+    }
+  }
+
+  fun setTravelMode(mode: String) {
+    if (_uiState.value.travelMode != mode) {
+      _uiState.update { it.copy(travelMode = mode) }
+      calculateRouteToSelectedZone()
+    }
+  }
+
+  /**
+   * One-tap "best safe zone" decision: selects the top-ranked feasible shelter
+   * (NOT simply the nearest) and routes to it.
+   */
+  fun selectBestSafeZone() {
+    val best = _uiState.value.rankedShelters.firstOrNull() ?: return
+    selectSafeZone(best.zone, autoRoute = true)
+    _uiState.update {
+      it.copy(snackbarMessage = "Best safe zone selected: ${best.zone.name} — ${best.rankExplanation}")
+    }
+  }
+
+  // =========================================================== NAVIGATION
+
+  fun startEvacuationRoute() {
+    val zone = _uiState.value.selectedSafeZone ?: return
+    _uiState.update {
+      it.copy(
+        isNavigatingLive = true,
+        currentTab = ScreenTab.RADAR_MAP,
+        snackbarMessage = "Live guidance to ${zone.name} started"
+      )
+    }
+    if (_uiState.value.activeRoute == null) {
+      calculateRouteToSelectedZone()
+    }
+  }
+
+  fun stopLiveNavigation() {
+    _uiState.update {
+      it.copy(
+        isNavigatingLive = false,
+        snackbarMessage = "Live evacuation guidance ended"
+      )
+    }
+  }
+
+  fun nextNavigationStep() {
+    val currentRoute = _uiState.value.activeRoute ?: return
+    val nextIndex = _uiState.value.currentNavigationStepIndex + 1
+    if (nextIndex < currentRoute.steps.size) {
+      _uiState.update { it.copy(currentNavigationStepIndex = nextIndex) }
+    } else {
+      _uiState.update {
+        it.copy(
+          isNavigatingLive = false,
+          snackbarMessage = "You have arrived safely at ${_uiState.value.selectedSafeZone?.name ?: "the safe zone"}!"
+        )
+      }
+    }
+  }
+
+  // ================================================================= TABS
+
+  fun setTab(tab: ScreenTab) {
+    _uiState.update { it.copy(currentTab = tab) }
+  }
+
+  fun toggleTheme() {
+    _uiState.update { it.copy(isDarkTheme = !it.isDarkTheme) }
+  }
+
+  fun toggleOfflineCache(active: Boolean) {
+    _uiState.update {
+      it.copy(
+        is100PercentOfflineCached = active,
+        snackbarMessage = if (active) "Offline survival pack & OSM tiles cached" else "Switched to live streaming mode"
+      )
+    }
+  }
+
+  fun syncData() {
+    viewModelScope.launch {
+      _uiState.update { it.copy(isSyncing = true) }
+      delay(1000)
+      val timeNow = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
+      _uiState.update {
+        it.copy(
+          isSyncing = false,
+          lastSyncTime = "Today at $timeNow • Emergency SMS live",
+          snackbarMessage = "Disaster intelligence, OSM tiles & radar grid refreshed"
+        )
+      }
+    }
+  }
+
+  fun toggleAudioBulletin() {
+    val willPlay = !_uiState.value.isAudioPlaying
+    _uiState.update { it.copy(isAudioPlaying = willPlay) }
+
+    audioJob?.cancel()
+    if (willPlay) {
+      audioJob = viewModelScope.launch {
+        var seconds = 0
+        while (_uiState.value.isAudioPlaying) {
+          delay(1000)
+          seconds++
+          _uiState.update { it.copy(audioPlaybackSeconds = seconds) }
+        }
+      }
+    }
+  }
+
+  fun setNewsCategory(category: String) {
+    _uiState.update { it.copy(selectedNewsCategory = category) }
+  }
+
+  fun toggleGoBagItem(itemId: String) {
+    _uiState.update { state ->
+      val updated = state.goBagItems.map {
+        if (it.id == itemId) it.copy(isChecked = !it.isChecked) else it
+      }
+      state.copy(goBagItems = updated)
+    }
+  }
+
+  // ================================================== SAFETY / SOS / TOOLS
+
+  fun setUserSafety(isSafe: Boolean) {
+    _uiState.update {
+      it.copy(
+        userIsSafe = isSafe,
+        snackbarMessage = if (isSafe) "Status updated: Marked as SAFE on SARANA network" else "Assistance requested: Alert pinged to NDRF ward dispatcher"
+      )
+    }
+  }
+
+  fun triggerSosBroadcast() {
+    _uiState.update {
+      it.copy(
+        showSosBroadcastDialog = true,
+        isSosActive = true
+      )
+    }
+  }
+
+  fun dismissSosDialog() {
+    _uiState.update { it.copy(showSosBroadcastDialog = false) }
+  }
+
+  fun cancelSosBroadcast() {
+    _uiState.update {
+      it.copy(
+        showSosBroadcastDialog = false,
+        isSosActive = false,
+        snackbarMessage = "SOS emergency broadcast canceled"
+      )
+    }
+  }
+
+  fun toggleFlashlight() {
+    _uiState.update {
+      val next = !it.isFlashlightOn
+      it.copy(
+        isFlashlightOn = next,
+        snackbarMessage = if (next) "Emergency Flashlight turned ON" else "Flashlight turned OFF"
+      )
+    }
+  }
+
+  fun toggleSiren() {
+    val willActivate = !_uiState.value.isSirenOn
+    _uiState.update {
+      it.copy(
+        isSirenOn = willActivate,
+        snackbarMessage = if (willActivate) "HIGH-DECIBEL SOS SIREN ACTIVE" else "SOS Siren deactivated"
+      )
+    }
+    sirenJob?.cancel()
+    if (willActivate) {
+      sirenJob = viewModelScope.launch {
+        delay(60000)
+        _uiState.update { it.copy(isSirenOn = false) }
+      }
+    }
+  }
+
+  // ============================================================= DIALOGS
+
+  fun openInteractiveBagDialog() {
+    _uiState.update { it.copy(showInteractiveBagDialog = true) }
+  }
+
+  fun closeInteractiveBagDialog() {
+    _uiState.update { it.copy(showInteractiveBagDialog = false) }
+  }
+
+  fun openAddContactDialog() {
+    _uiState.update { it.copy(showAddContactDialog = true) }
+  }
+
+  fun closeAddContactDialog() {
+    _uiState.update { it.copy(showAddContactDialog = false) }
+  }
+
+  fun addContact(name: String, relation: String, phone: String, location: String) {
+    val newContact = EmergencyContact(
+      id = "c-${System.currentTimeMillis()}",
+      name = name,
+      role = relation,
+      phone = phone,
+      locationNote = location,
+      initials = name.split(" ").mapNotNull { it.firstOrNull()?.toString() }.take(2).joinToString("").uppercase(),
+      colorHex = 0xFF4F46E5
+    )
+    _uiState.update {
+      it.copy(
+        contactsList = it.contactsList + newContact,
+        showAddContactDialog = false,
+        snackbarMessage = "Added $name to emergency kin network"
+      )
+    }
+  }
+
+  // ========================================================= DETAIL SHEETS
+
+  /** Opens the hazard detail sheet from a map-zone tap. */
+  fun openHazardDetail(zone: HazardZone) {
+    _uiState.update { it.copy(hazardDetailZone = zone) }
+  }
+
+  fun closeHazardDetail() {
+    _uiState.update { it.copy(hazardDetailZone = null) }
+  }
+
+  /** Opens the safe-zone detail sheet from a map-zone tap. */
+  fun openSafeZoneDetail(zone: SafeZone) {
+    _uiState.update { it.copy(safeZoneDetail = zone) }
+  }
+
+  fun closeSafeZoneDetail() {
+    _uiState.update { it.copy(safeZoneDetail = null) }
+  }
+
+  fun clearSnackbar() {
+    _uiState.update { it.copy(snackbarMessage = null) }
+  }
+}
