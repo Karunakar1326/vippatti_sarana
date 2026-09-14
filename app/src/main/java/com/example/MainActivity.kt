@@ -1,4 +1,4 @@
-package com.example
+﻿package com.example
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -194,9 +194,7 @@ fun VippattiAppRoot(
             onNextNavigationStep = { viewModel.nextNavigationStep() },
             onLoadAlternativeRoutes = { viewModel.loadAlternativeRoutes() },
             onOpenSensorBroadcast = { viewModel.triggerSosBroadcast() },
-            onOsmRouteUpdated = { dist, dur, summary, isLive ->
-              viewModel.onOsmRouteUpdated(dist, dur, summary, isLive)
-            },
+            onClearRoute = { viewModel.clearActiveRoute() },
             // REAL hardware GPS fixes replace the static pilot location (Painavu, Idukki, Kerala, India).
             onRealGpsFix = { lat, lon -> viewModel.applyRealGpsFix(lat, lon) },
             onOpenHazardDetail = { viewModel.openHazardDetail(it) },

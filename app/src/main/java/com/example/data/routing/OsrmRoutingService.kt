@@ -176,10 +176,14 @@ object OsrmRoutingService {
     hazards: List<HazardZone> = emptyList(),
     destinationName: String = "Safe Zone"
   ): RouteResult = withContext(Dispatchers.IO) {
-    val profile = if (mode == "driving") "driving" else "foot"
-    val url = "https://router.project-osrm.org/route/v1/$profile/" +
+    // Profile-matched endpoints: the router.project-osrm.org demo server hosts
+    // only the car profile — a /foot/ request there silently returns car
+    // geometry. The FOSSGIS community server runs dedicated foot + car
+    // instances, so each travel mode queries its own profile.
+    val endpoint = if (mode == "driving") "https://routing.openstreetmap.de/routed-car/route/v1/driving" else "https://routing.openstreetmap.de/routed-foot/route/v1/foot"
+    val url = "$endpoint/" +
       "${origin.lon},${origin.lat};${destination.lon},${destination.lat}" +
-      "?overview=full&geometries=geojson&steps=true&alternatives=true"
+      "?overview=full&geometries=geojson&steps=true" // routes[0] only — alternatives would 3x the payload
 
     var liveResult: RouteResult? = null
     try {

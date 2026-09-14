@@ -31,7 +31,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,8 +50,6 @@ import androidx.preference.PreferenceManager
 import com.example.data.PilotRegionData
 import com.example.data.model.HazardZone
 import com.example.data.model.SafeZone
-import com.example.data.routing.GeoPoint
-import com.example.data.routing.OsrmRoutingService
 import com.example.data.routing.RouteResult
 import com.example.ui.theme.EmergencyRed
 import com.example.ui.theme.NeonEmerald
@@ -60,10 +57,6 @@ import com.example.ui.theme.ObsidianContainer
 import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.TacticalOnSurfaceVariant
 import com.example.ui.theme.TacticalOutlineVariant
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint as OsmGeoPoint
@@ -109,7 +102,7 @@ fun OsmDroidRadarMapView(
   selectedSafeZone: SafeZone?,
   activeRoute: RouteResult?,
   travelMode: String, // "foot" or "driving"
-  onRouteComputed: (distanceKm: Double, durationMins: Int, summary: String, isLive: Boolean) -> Unit,
+  onClearRoute: () -> Unit,
   onSafeZoneSelected: (SafeZone) -> Unit,
   onHazardZoneTapped: (HazardZone) -> Unit,
   onSafeZoneTapped: (SafeZone) -> Unit,
@@ -123,7 +116,6 @@ fun OsmDroidRadarMapView(
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
-  val coroutineScope = rememberCoroutineScope()
 
   var hasLocationPermission by remember {
     mutableStateOf(
@@ -160,8 +152,12 @@ fun OsmDroidRadarMapView(
     if (selectedSafeZone != null) mapState.focusOnSafeZone(selectedSafeZone)
   }
 
+  // Draws the OSRM evacuation polyline whenever a route is computed, and
+  // REMOVES it when the ViewModel clears the corridor — the map never keeps
+  // a polyline that state no longer knows about.
   LaunchedEffect(activeRoute) {
-    activeRoute?.let { mapState.displayRoute(it) }
+    if (activeRoute != null) mapState.displayRoute(activeRoute)
+    else mapState.clearRouteOverlay()
   }
 
   DisposableEffect(lifecycleOwner) {
@@ -189,9 +185,7 @@ fun OsmDroidRadarMapView(
           onSafeZoneSelected = onSafeZoneSelected,
           onHazardZoneTapped = onHazardZoneTapped,
           onSafeZoneTapped = onSafeZoneTapped,
-          onRouteComputed = onRouteComputed,
-          onRealGpsFix = onRealGpsFix,
-          coroutineScope = coroutineScope
+          onRealGpsFix = onRealGpsFix
         )
       },
       update = { _ ->
@@ -220,8 +214,10 @@ fun OsmDroidRadarMapView(
         mapState.recenterUser()
       }
       MapControlButton(Icons.Default.DeleteSweep, "Clear Route", EmergencyRed, "osmdroid_clear_route_button") {
-        mapState.clearActiveRoute()
-        Toast.makeText(context, "Evacuation route cleared", Toast.LENGTH_SHORT).show()
+        // Route clearing flows through the ViewModel (single source of
+        // truth): state resets, then this map removes its polyline because
+        // activeRoute becomes null. Map-only removal would desync UI state.
+        onClearRoute()
       }
     }
 
@@ -279,7 +275,6 @@ class OsmMapControllerHolder(
     private set
 
   private var locationOverlay: MyLocationNewOverlay? = null
-  private var activeRoutingJob: Job? = null
   private var currentTravelMode: String = "foot"
   private var currentRoutePolyline: Polyline? = null
 
@@ -300,9 +295,7 @@ class OsmMapControllerHolder(
     onSafeZoneSelected: (SafeZone) -> Unit,
     onHazardZoneTapped: (HazardZone) -> Unit,
     onSafeZoneTapped: (SafeZone) -> Unit,
-    onRouteComputed: (distanceKm: Double, durationMins: Int, summary: String, isLive: Boolean) -> Unit,
-    onRealGpsFix: (latitude: Double, longitude: Double) -> Unit,
-    coroutineScope: kotlinx.coroutines.CoroutineScope
+    onRealGpsFix: (latitude: Double, longitude: Double) -> Unit
   ): MapView {
     // 1. Secure osmdroid configuration + tile cache (offline-first tiles).
     val sharedPrefs = PreferenceManager.getDefaultSharedPreferences(context)
@@ -468,8 +461,8 @@ class OsmMapControllerHolder(
     mapView?.controller?.animateTo(OsmGeoPoint(zone.lat, zone.lon))
   }
 
-  fun clearActiveRoute() {
-    activeRoutingJob?.cancel()
+  /** Removes the route polyline (called when ViewModel state clears the corridor). */
+  fun clearRouteOverlay() {
     currentRoutePolyline?.let { mapView?.overlays?.remove(it) }
     currentRoutePolyline = null
     mapView?.invalidate()
@@ -496,7 +489,6 @@ class OsmMapControllerHolder(
   }
 
   fun cleanup() {
-    activeRoutingJob?.cancel()
     mapView?.onDetach()
   }
 

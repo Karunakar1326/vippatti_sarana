@@ -13,12 +13,12 @@ import com.example.data.reports.EmergencyReportService
 import com.example.data.reports.NdrfEmergencyReportService
 import com.example.data.reports.ReportKind
 import com.example.data.reports.ReportReceipt
+import com.example.data.model.GeoMath
 import com.example.data.model.HazardZone
 import com.example.data.model.SafeZone
 import com.example.data.routing.GeoPoint
 import com.example.data.routing.OsrmRoutingService
 import com.example.data.routing.RouteResult
-import com.example.data.routing.RouteStep
 import com.example.data.risk.ActionAdvisor
 import com.example.data.risk.PersonalRiskAssessment
 import com.example.data.risk.RecommendedAction
@@ -37,6 +37,14 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/**
+ * Minimum movement (meters) from the last route origin before GPS fixes may
+ * trigger re-routing. Fixes arrive ~1/sec with sub-metre jitter; without this
+ * guard every fix would cancel the in-flight OSRM request and the map would
+ * starve (a route could never finish computing, so nothing was ever drawn).
+ */
+private const val REROUTE_MIN_MOVEMENT_METERS = 50.0
 
 enum class ScreenTab {
   RADAR_MAP,
@@ -144,6 +152,9 @@ class VippattiViewModel(
   private var sirenJob: Job? = null
   private var routingJob: Job? = null
 
+  /** Location the current/last route was computed from — guards GPS re-routing. */
+  private var lastRouteOrigin: GeoPoint? = null
+
   init {
     // Run the full intelligence pipeline once on the fallback location so the
     // map opens with risk, ranked shelters and a recommendation immediately.
@@ -207,7 +218,8 @@ class VippattiViewModel(
 
   /**
    * Applies a REAL hardware GPS fix (reported by the osmdroid location overlay).
-   * Real fixes replace the static India fallback and re-run every decision.
+   * Real fixes replace the static India fallback and re-run every decision;
+   * re-routing is movement-guarded so 1 Hz fixes never starve the OSRM request.
    */
   fun applyRealGpsFix(latitude: Double, longitude: Double) {
     val state = _uiState.value
@@ -219,8 +231,26 @@ class VippattiViewModel(
         )
       }
       recomputeIntelligence()
-      if (_uiState.value.selectedSafeZone != null) calculateRouteToSelectedZone()
+      maybeRecalculateRouteForNewLocation()
     }
+  }
+
+  /**
+   * Re-routes only when the user has moved at least [REROUTE_MIN_MOVEMENT_METERS]
+   * from the origin of the displayed route. GPS fixes arrive ~1/sec with
+   * sub-metre jitter — re-routing on every fix would keep cancelling the
+   * in-flight OSRM request (route starvation: no corridor could ever finish
+   * computing, so no polyline was ever drawn). A route the user explicitly
+   * cleared is never resurrected by movement alone.
+   */
+  private fun maybeRecalculateRouteForNewLocation() {
+    val state = _uiState.value
+    if (state.selectedSafeZone == null) return
+    if (state.activeRoute == null && lastRouteOrigin == null) return
+    val routeOrigin = lastRouteOrigin
+    val movedFarEnough = routeOrigin == null ||
+      GeoMath.distanceMeters(routeOrigin, state.userLocation) >= REROUTE_MIN_MOVEMENT_METERS
+    if (movedFarEnough) calculateRouteToSelectedZone()
   }
 
   // ================================================================ ROUTING
@@ -242,6 +272,7 @@ class VippattiViewModel(
   fun calculateRouteToSelectedZone() {
     val zone = _uiState.value.selectedSafeZone ?: return
     routingJob?.cancel()
+    lastRouteOrigin = _uiState.value.userLocation
     routingJob = viewModelScope.launch {
       _uiState.update { it.copy(isCalculatingRoute = true) }
       val result = OsrmRoutingService.calculateRoute(
@@ -268,6 +299,7 @@ class VippattiViewModel(
   fun loadAlternativeRoutes() {
     val zone = _uiState.value.selectedSafeZone ?: return
     routingJob?.cancel()
+    lastRouteOrigin = _uiState.value.userLocation
     routingJob = viewModelScope.launch {
       _uiState.update { it.copy(isCalculatingRoute = true) }
       val alternatives = OsrmRoutingService.calculateAlternativeRoutes(
@@ -288,29 +320,24 @@ class VippattiViewModel(
     }
   }
 
-  /** OSMDroid map reports a freshly computed corridor. */
-  fun onOsmRouteUpdated(distanceKm: Double, durationMins: Int, summary: String, isLive: Boolean) {
-    _uiState.update { state ->
-      val merged = state.activeRoute?.let { existing ->
-        existing.copy(
-          distanceMeters = distanceKm * 1000.0,
-          durationSeconds = durationMins * 60.0,
-          isLiveOsrm = isLive,
-          summary = summary,
-          travelMode = state.travelMode
-        )
-      } ?: RouteResult(
-        distanceMeters = distanceKm * 1000.0,
-        durationSeconds = durationMins * 60.0,
-        pathPoints = emptyList(),
-        steps = listOf(RouteStep("Follow evacuation corridor to destination", distanceKm * 1000.0, durationMins * 60.0)),
-        isLiveOsrm = isLive,
-        summary = summary,
-        travelMode = state.travelMode
-      )
-      state.copy(
-        activeRoute = merged,
-        snackbarMessage = "Corridor computed: ${String.format("%.2f", distanceKm)} km • $durationMins mins ($summary)"
+  /**
+   * Clears the computed evacuation corridor (map "Clear Route" control).
+   * Single source of truth: state resets here and the OSMDroid layer removes
+   * its polyline because activeRoute becomes null — never a map-only removal
+   * that would leave state and map disagreeing.
+   */
+  fun clearActiveRoute() {
+    routingJob?.cancel()
+    routingJob = null
+    lastRouteOrigin = null
+    _uiState.update {
+      it.copy(
+        activeRoute = null,
+        alternativeRoutes = emptyList(),
+        isCalculatingRoute = false,
+        isNavigatingLive = false,
+        currentNavigationStepIndex = 0,
+        snackbarMessage = "Evacuation route cleared"
       )
     }
   }
