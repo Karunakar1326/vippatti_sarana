@@ -16,6 +16,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -84,6 +86,7 @@ import com.example.ui.theme.ObsidianContainer
 import com.example.ui.theme.ObsidianContainerHigh
 import com.example.ui.theme.ObsidianContainerLow
 import com.example.ui.theme.ObsidianSurface
+import com.example.ui.theme.OnNeonEmerald
 import com.example.ui.theme.TacticalCyan
 import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.TacticalOnSurfaceVariant
@@ -91,6 +94,7 @@ import com.example.ui.theme.TacticalOutlineVariant
 import com.example.ui.theme.WarningAmber
 import com.example.viewmodel.VippattiUiState
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProfileScreen(
   uiState: VippattiUiState,
@@ -133,7 +137,8 @@ fun ProfileScreen(
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp)
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          modifier = Modifier.weight(1f)
         ) {
           Box(
             modifier = Modifier
@@ -369,7 +374,10 @@ fun ProfileScreen(
           ) {
             Row(
               verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(10.dp)
+              horizontalArrangement = Arrangement.spacedBy(10.dp),
+              // Flex so long citizen names wrap and the blood-group chip +
+              // edit button stay fully visible on any width.
+              modifier = Modifier.weight(1f)
             ) {
               Box(contentAlignment = Alignment.BottomEnd) {
                 Box(
@@ -479,7 +487,7 @@ fun ProfileScreen(
               Icon(
                 imageVector = Icons.Default.CheckCircle,
                 contentDescription = null,
-                tint = if (uiState.userIsSafe) Color(0xFF003822) else TacticalOnSurfaceVariant,
+                tint = if (uiState.userIsSafe) OnNeonEmerald else TacticalOnSurfaceVariant,
                 modifier = Modifier.size(16.dp)
               )
               Spacer(modifier = Modifier.width(4.dp))
@@ -487,7 +495,7 @@ fun ProfileScreen(
                 text = "I AM SAFE",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
-                color = if (uiState.userIsSafe) Color(0xFF003822) else TacticalOnSurfaceVariant
+                color = if (uiState.userIsSafe) OnNeonEmerald else TacticalOnSurfaceVariant
               )
             }
 
@@ -751,7 +759,9 @@ fun ProfileScreen(
         ) {
           Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            // Flex so long names wrap safely and the call/SOS buttons stay on screen.
+            modifier = Modifier.weight(1f)
           ) {
             Box(
               modifier = Modifier
@@ -883,9 +893,12 @@ fun ProfileScreen(
             lineHeight = 16.sp
           )
 
-          Row(
+          // FlowRow so the requirement chips wrap to a new line on narrow
+          // screens instead of overflowing the card edge.
+          FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
           ) {
             // Elder
             Row(

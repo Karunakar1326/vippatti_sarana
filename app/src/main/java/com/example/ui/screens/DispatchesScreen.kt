@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -60,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -136,7 +138,10 @@ fun DispatchesScreen(
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(12.dp)
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          // Flex so the title block wraps/shrinks safely and the refresh
+          // button stays fully on screen at any width.
+          modifier = Modifier.weight(1f)
         ) {
           Box(
             modifier = Modifier
@@ -406,10 +411,13 @@ fun DispatchesScreen(
             .border(2.dp, EmergencyRed.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
         ) {
           // Banner Image with Overlays
+          // Width-proportional hero height (≈0.53 of card width — the original
+          // 176dp on a 360dp phone) so it scales down on small phones and
+          // grows sensibly on large ones, instead of a fixed 176dp.
           Box(
             modifier = Modifier
               .fillMaxWidth()
-              .height(176.dp)
+              .aspectRatio(1f / 0.53f)
               .background(ObsidianContainerHighest)
           ) {
             AsyncImage(
@@ -539,7 +547,10 @@ fun DispatchesScreen(
             ) {
               Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                // Flex so long verifier labels ellipsize instead of pushing
+                // the evacuation button off screen.
+                modifier = Modifier.weight(1f)
               ) {
                 Icon(
                   imageVector = Icons.Default.CheckCircle,
@@ -551,7 +562,9 @@ fun DispatchesScreen(
                   text = alert.verifiedBadge,
                   fontSize = 12.sp,
                   fontWeight = FontWeight.SemiBold,
-                  color = NeonEmerald
+                  color = NeonEmerald,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
                 )
               }
 
@@ -679,7 +692,10 @@ fun FeedDispatchCard(
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(8.dp)
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          // Flex so long agency lines ellipsize instead of pushing the
+          // severity tag badge off the card.
+          modifier = Modifier.weight(1f)
         ) {
           val iconBg = when (dispatch.iconType) {
             DispatchIconType.RAIN -> TacticalCyanContainer.copy(alpha = 0.2f)
@@ -797,7 +813,8 @@ fun FeedDispatchCard(
             text = dispatch.location,
             fontSize = 11.sp,
             color = TacticalOnSurfaceVariant,
-            maxLines = 1
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
           )
         }
 

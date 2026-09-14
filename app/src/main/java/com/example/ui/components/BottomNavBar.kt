@@ -32,16 +32,17 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.NeonEmerald
+import com.example.ui.theme.OnNeonEmerald
 import com.example.ui.theme.TacticalNavBg
 import com.example.ui.theme.TacticalNavBorder
 import com.example.ui.theme.TacticalNavInactive
+import com.example.ui.theme.TacticalOnSurface
 import com.example.viewmodel.ScreenTab
 
 private data class NavItemData(
@@ -132,7 +133,7 @@ fun VippattiBottomNavBar(
               .then(
                 if (selected) {
                   Modifier
-                    .background(Color(0xFF204B3D), CircleShape)
+                    .background(NeonEmerald, CircleShape)
                 } else {
                   Modifier
                 }
@@ -141,7 +142,7 @@ fun VippattiBottomNavBar(
             Icon(
               imageVector = if (selected) item.activeIcon else item.inactiveIcon,
               contentDescription = item.label,
-              tint = if (selected) Color.White else TacticalNavInactive,
+              tint = if (selected) OnNeonEmerald else TacticalNavInactive,
               modifier = Modifier.size(22.dp)
             )
           }
@@ -150,7 +151,7 @@ fun VippattiBottomNavBar(
             text = item.label,
             fontSize = 11.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            color = if (selected) Color.White else TacticalNavInactive,
+            color = if (selected) TacticalOnSurface else TacticalNavInactive,
             letterSpacing = 0.2.sp
           )
         }

@@ -16,13 +16,17 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -62,6 +66,7 @@ import com.example.ui.theme.NeonEmerald
 import com.example.ui.theme.ObsidianContainerHigh
 import com.example.ui.theme.ObsidianContainerLow
 import com.example.ui.theme.ObsidianSurface
+import com.example.ui.theme.OnNeonEmerald
 import com.example.ui.theme.TacticalCyan
 import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.TacticalOnSurfaceVariant
@@ -99,7 +104,11 @@ fun SosBroadcastDialog(
       Column(
         modifier = Modifier
           .padding(24.dp)
-          .fillMaxWidth(),
+          .fillMaxWidth()
+          // Emergency dialog content must remain reachable on short screens,
+          // landscape and with the keyboard open — scroll instead of clip.
+          .verticalScroll(rememberScrollState())
+          .imePadding(),
         horizontalAlignment = Alignment.CenterHorizontally
       ) {
         Box(
@@ -221,6 +230,7 @@ fun InteractiveBagDialog(
 ) {
   val checkedCount = items.count { it.isChecked }
   val progress = if (items.isNotEmpty()) checkedCount.toFloat() / items.size else 0f
+  val progressPercent = (progress * 100).toInt()
 
   Dialog(onDismissRequest = onDismiss) {
     Surface(
@@ -234,21 +244,24 @@ fun InteractiveBagDialog(
         modifier = Modifier
           .padding(20.dp)
           .fillMaxWidth()
+          // Adapts to short screens: the checklist scrolls INTERNALLY and the
+          // bottom action button always stays visible — never covers items.
+          .heightIn(max = 420.dp)
       ) {
         Row(
           modifier = Modifier.fillMaxWidth(),
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically
         ) {
-          Column {
+          Column(modifier = Modifier.weight(1f)) {
             Text(
-              text = "Interactive Evacuation Bag",
-              fontSize = 16.sp,
+              text = "INTERACTIVE EVACUATION KIT",
+              fontSize = 15.sp,
               fontWeight = FontWeight.Bold,
               color = TacticalOnSurface
             )
             Text(
-              text = "Check off all survival essentials ($checkedCount of ${items.size} packed)",
+              text = "$checkedCount of ${items.size} items packed",
               fontSize = 11.sp,
               color = TacticalOnSurfaceVariant
             )
@@ -270,10 +283,23 @@ fun InteractiveBagDialog(
           trackColor = ObsidianContainerHigh,
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
+        Text(
+          text = "$progressPercent% packed",
+          fontSize = 10.sp,
+          fontWeight = FontWeight.Bold,
+          color = if (progressPercent == 100) NeonEmerald else TacticalOnSurfaceVariant,
+          modifier = Modifier.align(Alignment.End)
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Internally scrollable checklist — no item is ever clipped.
         LazyColumn(
-          modifier = Modifier.weight(1f, fill = false),
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f, fill = false),
           verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
           items(items) { item ->
@@ -324,7 +350,11 @@ fun InteractiveBagDialog(
             .height(44.dp)
             .testTag("interactive_bag_done_button")
         ) {
-          Text("Done Packing", fontWeight = FontWeight.Bold, color = Color(0xFF003822))
+          Text(
+            if (progressPercent == 100) "Kit Complete — Done" else "Mark as Complete",
+            fontWeight = FontWeight.Bold,
+            color = OnNeonEmerald
+          )
         }
       }
     }
@@ -352,7 +382,10 @@ fun AddContactDialog(
       Column(
         modifier = Modifier
           .padding(20.dp)
-          .fillMaxWidth(),
+          .fillMaxWidth()
+          // Form scrolls and stays clear of the keyboard on short screens.
+          .verticalScroll(rememberScrollState())
+          .imePadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         Row(
@@ -447,7 +480,7 @@ fun AddContactDialog(
             .height(44.dp)
             .testTag("save_contact_button")
         ) {
-          Text("Save to Emergency Net", fontWeight = FontWeight.Bold, color = Color(0xFF003822))
+          Text("Save to Emergency Net", fontWeight = FontWeight.Bold, color = OnNeonEmerald)
         }
       }
     }
@@ -474,7 +507,9 @@ fun HazardZoneDetailDialog(
       Column(
         modifier = Modifier
           .padding(20.dp)
-          .fillMaxWidth(),
+          .fillMaxWidth()
+          // Long hazard intelligence scrolls instead of clipping on short screens.
+          .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         Row(
@@ -566,7 +601,10 @@ fun SafeZoneDetailDialog(
       Column(
         modifier = Modifier
           .padding(20.dp)
-          .fillMaxWidth(),
+          .fillMaxWidth()
+          // Long safe-zone intelligence (capacity + resources + reasons)
+          // scrolls instead of clipping on short screens.
+          .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         Row(
@@ -694,7 +732,7 @@ fun SafeZoneDetailDialog(
             .height(44.dp)
             .testTag("safe_zone_route_button")
         ) {
-          Text("Route To This Safe Zone", fontWeight = FontWeight.Bold, color = Color(0xFF003822))
+          Text("Route To This Safe Zone", fontWeight = FontWeight.Bold, color = OnNeonEmerald)
         }
       }
     }
@@ -750,7 +788,10 @@ fun SosConfirmDialog(
       Column(
         modifier = Modifier
           .padding(24.dp)
-          .fillMaxWidth(),
+          .fillMaxWidth()
+          // Keep the YES/CANCEL emergency actions reachable on short screens.
+          .verticalScroll(rememberScrollState())
+          .imePadding(),
         horizontalAlignment = Alignment.CenterHorizontally
       ) {
         Icon(

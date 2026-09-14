@@ -1,56 +1,65 @@
 package com.example.ui.theme
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 
-private val DarkTacticalColorScheme = darkColorScheme(
-  primary = NeonEmerald,
-  onPrimary = OnNeonEmerald,
-  primaryContainer = NeonEmeraldContainer,
-  onPrimaryContainer = OnNeonEmeraldContainer,
-  secondary = TacticalCyan,
-  onSecondary = OnTacticalCyan,
-  secondaryContainer = TacticalCyanContainer,
-  onSecondaryContainer = OnTacticalCyanContainer,
-  background = ObsidianBg,
-  onBackground = TacticalOnSurface,
-  surface = ObsidianSurface,
-  onSurface = TacticalOnSurface,
-  surfaceVariant = ObsidianContainerHighest,
-  onSurfaceVariant = TacticalOnSurfaceVariant,
-  outline = TacticalOutline,
-  outlineVariant = TacticalOutlineVariant,
-  error = EmergencyRedBright,
-  onError = OnEmergencyRed,
-  errorContainer = EmergencyRedContainer,
-  onErrorContainer = OnEmergencyRedContainer
+/**
+ * ONE source of truth for the application theme. VippattiTheme receives the
+ * app-level isDarkTheme state (from VippattiViewModel.uiState) and provides
+ * both the Material color scheme and the global [VippattiColors] palette, so
+ * every token (NeonEmerald, ObsidianSurface, TacticalOnSurface, ...) resolves
+ * theme-aware everywhere. Switching themes is instantaneous app-wide.
+ */
+val LocalVippattiColors = staticCompositionLocalOf { DarkVippattiColors }
+
+private fun vippattiDarkScheme(p: VippattiColors) = darkColorScheme(
+  primary = p.neonEmerald,
+  onPrimary = p.onNeonEmerald,
+  primaryContainer = p.neonEmeraldContainer,
+  onPrimaryContainer = p.onNeonEmeraldContainer,
+  secondary = p.tacticalCyan,
+  onSecondary = p.onTacticalCyan,
+  secondaryContainer = p.tacticalCyanContainer,
+  onSecondaryContainer = p.onTacticalCyanContainer,
+  background = p.obsidianBg,
+  onBackground = p.tacticalOnSurface,
+  surface = p.obsidianSurface,
+  onSurface = p.tacticalOnSurface,
+  surfaceVariant = p.obsidianContainerHighest,
+  onSurfaceVariant = p.tacticalOnSurfaceVariant,
+  outline = p.tacticalOutline,
+  outlineVariant = p.tacticalOutlineVariant,
+  error = p.emergencyRedBright,
+  onError = p.onEmergencyRed,
+  errorContainer = p.emergencyRedContainer,
+  onErrorContainer = p.onEmergencyRedContainer
 )
 
-private val LightTacticalColorScheme = lightColorScheme(
-  primary = EmergencyRed,
-  onPrimary = Color.White,
-  primaryContainer = Color(0xFFFEE2E2),
-  onPrimaryContainer = Color(0xFF7F1D1D),
-  secondary = Color(0xFF0284C7),
-  onSecondary = Color.White,
-  secondaryContainer = Color(0xFFE0F2FE),
-  onSecondaryContainer = Color(0xFF0369A1),
-  background = Color(0xFFF8FAFC),
-  onBackground = Color(0xFF0F172A),
-  surface = Color.White,
-  onSurface = Color(0xFF0F172A),
-  surfaceVariant = Color(0xFFF1F5F9),
-  onSurfaceVariant = Color(0xFF64748B),
-  outline = Color(0xFFCBD5E1),
-  outlineVariant = Color(0xFFE2E8F0),
-  error = EmergencyRed,
-  onError = Color.White,
-  errorContainer = Color(0xFFFEE2E2),
-  onErrorContainer = Color(0xFF991B1B)
+private fun vippattiLightScheme(p: VippattiColors) = lightColorScheme(
+  primary = p.neonEmerald,
+  onPrimary = p.onNeonEmerald,
+  primaryContainer = p.neonEmeraldContainer,
+  onPrimaryContainer = p.onNeonEmeraldContainer,
+  secondary = p.tacticalCyan,
+  onSecondary = p.onTacticalCyan,
+  secondaryContainer = p.tacticalCyanContainer,
+  onSecondaryContainer = p.onTacticalCyanContainer,
+  background = p.obsidianBg,
+  onBackground = p.tacticalOnSurface,
+  surface = p.obsidianSurface,
+  onSurface = p.tacticalOnSurface,
+  surfaceVariant = p.obsidianContainerHighest,
+  onSurfaceVariant = p.tacticalOnSurfaceVariant,
+  outline = p.tacticalOutline,
+  outlineVariant = p.tacticalOutlineVariant,
+  error = p.emergencyRedBright,
+  onError = p.onEmergencyRed,
+  errorContainer = p.emergencyRedContainer,
+  onErrorContainer = p.onEmergencyRedContainer
 )
 
 @Composable
@@ -58,11 +67,14 @@ fun VippattiTheme(
   darkTheme: Boolean = true, // Default to tactical night mode matching the screens
   content: @Composable () -> Unit,
 ) {
-  val colorScheme = if (darkTheme) DarkTacticalColorScheme else LightTacticalColorScheme
+  val palette = if (darkTheme) DarkVippattiColors else LightVippattiColors
+  val colorScheme = if (darkTheme) vippattiDarkScheme(palette) else vippattiLightScheme(palette)
 
-  MaterialTheme(
-    colorScheme = colorScheme,
-    typography = Typography,
-    content = content
-  )
+  CompositionLocalProvider(LocalVippattiColors provides palette) {
+    MaterialTheme(
+      colorScheme = colorScheme,
+      typography = Typography,
+      content = content
+    )
+  }
 }

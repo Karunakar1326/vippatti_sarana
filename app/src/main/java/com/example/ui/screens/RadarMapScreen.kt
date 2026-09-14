@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -65,6 +66,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -139,7 +142,10 @@ fun RadarMapScreen(
       .fillMaxSize()
       .background(ObsidianSurface)
   ) {
-    val sheetExpandedHeight = (maxHeight * 0.68f).coerceAtLeast(420.dp)
+    // Responsive sheet sizing — 68% of the available height on tall screens,
+    // but never larger than the screen (short phones / landscape) and never
+    // smaller than a usable peek of the expanded content.
+    val sheetExpandedHeight = (maxHeight * 0.68f).coerceIn(320.dp, maxHeight * 0.92f)
     val animatedSheetHeight by animateDpAsState(
       targetValue = if (isSheetExpanded) sheetExpandedHeight else sheetPeekHeight,
       animationSpec = spring(
@@ -150,6 +156,13 @@ fun RadarMapScreen(
     )
 
     // 1. FULL-BLEED MAP — the single OSMDroid engine (draggable, zoomable).
+    //    The floating overlay heights are MEASURED (not assumed) so the map's
+    //    control stack and attribution banner reposition themselves cleanly
+    //    on every screen size, density and font scale.
+    val density = LocalDensity.current
+    var topOverlayHeightPx by remember { mutableStateOf(0) }
+    val topOverlayPadding = (topOverlayHeightPx / density.density).dp
+
     OsmDroidRadarMapView(
       hazardZones = uiState.hazardZones,
       safeZones = uiState.safeZones,
@@ -161,53 +174,60 @@ fun RadarMapScreen(
       onHazardZoneTapped = onOpenHazardDetail,
       onSafeZoneTapped = onOpenSafeZoneDetail,
       onRealGpsFix = onRealGpsFix,
-      modifier = Modifier.fillMaxSize()
+      modifier = Modifier.fillMaxSize(),
+      topOverlayPadding = topOverlayPadding + 8.dp,
+      bottomOverlayPadding = animatedSheetHeight
     )
 
     // 2. Floating top strip: personal risk + SOS broadcast.
-    Row(
+    //    Structured as a Column flow (not absolute offsets) so the map's
+    //    right-edge control stack always starts BELOW the strip — no overlap
+    //    at any width/density, and the strip wraps instead of being clipped.
+    Column(
       modifier = Modifier
         .align(Alignment.TopStart)
         .fillMaxWidth()
-        .padding(horizontal = 10.dp, vertical = 8.dp),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically
+        .onSizeChanged { size -> topOverlayHeightPx = size.height }
     ) {
-      PersonalRiskStrip(
-        risk = uiState.personalRisk,
-        isFallbackLocation = uiState.isUserLocationFallback,
-        modifier = Modifier.weight(1f)
-      )
-      IconButton(
-        onClick = onOpenSensorBroadcast,
+      Row(
         modifier = Modifier
-          .size(40.dp)
-          .clip(RoundedCornerShape(10.dp))
-          .background(EmergencyRed.copy(alpha = 0.9f))
-          .testTag("mesh_sensor_broadcast_button")
+          .fillMaxWidth()
+          .padding(horizontal = 10.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
       ) {
-        Icon(
-          imageVector = Icons.Default.Sensors,
-          contentDescription = "Emergency SOS Broadcast",
-          tint = Color.White,
-          modifier = Modifier.size(20.dp)
+        PersonalRiskStrip(
+          risk = uiState.personalRisk,
+          isFallbackLocation = uiState.isUserLocationFallback,
+          modifier = Modifier.weight(1f)
+        )
+        IconButton(
+          onClick = onOpenSensorBroadcast,
+          modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(EmergencyRed.copy(alpha = 0.9f))
+            .testTag("mesh_sensor_broadcast_button")
+        ) {
+          Icon(
+            imageVector = Icons.Default.Sensors,
+            contentDescription = "Emergency SOS Broadcast",
+            tint = Color.White,
+            modifier = Modifier.size(20.dp)
+          )
+        }
+      }
+
+      // 3. Live turn-by-turn HUD — directly under the risk strip while
+      //    guidance is active, always following the SELECTED destination's
+      //    route. Flows below the strip (no hardcoded top offset).
+      AnimatedVisibility(visible = uiState.isNavigatingLive) {
+        LiveNavigationHud(
+          uiState = uiState,
+          onNextNavigationStep = onNextNavigationStep,
+          onStopEvacuation = onStopEvacuation
         )
       }
-    }
-
-    // 3. Live turn-by-turn HUD — directly under the risk strip while guidance
-    //    is active, always following the SELECTED destination's route.
-    AnimatedVisibility(
-      visible = uiState.isNavigatingLive,
-      modifier = Modifier
-        .align(Alignment.TopCenter)
-        .padding(top = 64.dp)
-    ) {
-      LiveNavigationHud(
-        uiState = uiState,
-        onNextNavigationStep = onNextNavigationStep,
-        onStopEvacuation = onStopEvacuation
-      )
     }
 
     // 4. COLLAPSIBLE BOTTOM SHEET — tap handle or flick to collapse/expand;
@@ -467,7 +487,12 @@ private fun SafeZoneCarousel(
           evaluation = uiState.rankedShelters.firstOrNull { it.zone.id == zone.id },
           isSelected = isSelected,
           isCalculatingRoute = uiState.isCalculatingRoute && isSelected,
-          onSelect = { onSelectSafeZone(zone) }
+          onSelect = { onSelectSafeZone(zone) },
+          // Responsive carousel card: ~72% of the viewport width so the next
+          // card always peeks, clamped to a sensible max on tablets.
+          modifier = Modifier
+            .fillParentMaxWidth(0.72f)
+            .widthIn(max = 280.dp)
         )
       }
     }
@@ -484,7 +509,8 @@ private fun SafeZoneCard(
   evaluation: SafeZoneEvaluation?,
   isSelected: Boolean,
   isCalculatingRoute: Boolean,
-  onSelect: () -> Unit
+  onSelect: () -> Unit,
+  modifier: Modifier = Modifier
 ) {
   val capacity = evaluation?.capacityReport
   val occupancyRatio = if (zone.capacityTotal > 0) {
@@ -495,8 +521,7 @@ private fun SafeZoneCard(
   val etaMins = SafeZoneEvaluator.estimateTravelMinutes(distanceKm, 1.35)
 
   Column(
-    modifier = Modifier
-      .width(240.dp)
+    modifier = modifier
       .clip(RoundedCornerShape(14.dp))
       .background(if (isSelected) ObsidianContainerHigh else ObsidianContainer)
       .border(
@@ -817,10 +842,11 @@ private fun WeatherCell(
 // PERSONAL RISK STRIP — RED/ORANGE/YELLOW/GREEN + understandable explanation
 // ============================================================================
 
+@Composable
 private fun riskColor(level: RiskLevel?): Color = when (level) {
   RiskLevel.RED -> EmergencyRedBright
   RiskLevel.ORANGE -> WarningAmber
-  RiskLevel.YELLOW -> Color(0xFFFDD835)
+  RiskLevel.YELLOW -> Color(0xFFFDD835) // semantic risk-yellow, constant on both themes
   RiskLevel.GREEN -> NeonEmerald
   null -> TacticalOnSurfaceVariant
 }
@@ -1369,7 +1395,7 @@ private fun LiveNavigationHud(
       .fillMaxWidth()
       .padding(horizontal = 10.dp)
       .clip(RoundedCornerShape(12.dp))
-      .background(Color(0xFF003822).copy(alpha = 0.96f))
+      .background(ObsidianContainerLowest.copy(alpha = 0.96f))
       .border(1.dp, NeonEmerald, RoundedCornerShape(12.dp))
       .padding(horizontal = 12.dp, vertical = 10.dp)
   ) {
@@ -1393,7 +1419,7 @@ private fun LiveNavigationHud(
           Icon(
             imageVector = Icons.Default.Navigation,
             contentDescription = null,
-            tint = Color(0xFF003822),
+            tint = OnNeonEmerald,
             modifier = Modifier.size(18.dp)
           )
         }
@@ -1409,7 +1435,7 @@ private fun LiveNavigationHud(
             text = currentStep?.instruction ?: "Proceed along the safe corridor",
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
+            color = TacticalOnSurface,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis
           )
@@ -1420,7 +1446,7 @@ private fun LiveNavigationHud(
           onClick = onNextNavigationStep,
           colors = ButtonDefaults.buttonColors(
             containerColor = NeonEmerald,
-            contentColor = Color(0xFF003822)
+            contentColor = OnNeonEmerald
           ),
           shape = RoundedCornerShape(8.dp),
           contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -1437,7 +1463,7 @@ private fun LiveNavigationHud(
           modifier = Modifier
             .size(30.dp)
             .clip(CircleShape)
-            .background(Color(0x33000000))
+            .background(EmergencyRed)
             .testTag("navigation_stop_button")
         ) {
           Icon(Icons.Default.Close, contentDescription = "Exit Navigation", tint = Color.White, modifier = Modifier.size(14.dp))

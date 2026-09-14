@@ -42,6 +42,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.unit.Dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -113,7 +114,12 @@ fun OsmDroidRadarMapView(
   onHazardZoneTapped: (HazardZone) -> Unit,
   onSafeZoneTapped: (SafeZone) -> Unit,
   onRealGpsFix: (latitude: Double, longitude: Double) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  // Overlay-aware spacing so the floating map controls / attribution banner
+  // never sit underneath the screen's risk strip, HUD or bottom sheet on any
+  // device size or font scale. Both default to 0 (no overlay above the map).
+  topOverlayPadding: Dp = 0.dp,
+  bottomOverlayPadding: Dp = 0.dp
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
@@ -198,7 +204,7 @@ fun OsmDroidRadarMapView(
     Column(
       modifier = Modifier
         .align(Alignment.TopEnd)
-        .padding(top = 12.dp, end = 10.dp),
+        .padding(top = topOverlayPadding + 12.dp, end = 10.dp),
       verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
       MapControlButton(Icons.Default.Layers, "Cycle Tile Layer", NeonEmerald, "osmdroid_layer_toggle_button") {
@@ -223,7 +229,7 @@ fun OsmDroidRadarMapView(
     Column(
       modifier = Modifier
         .align(Alignment.BottomStart)
-        .padding(start = 8.dp, bottom = 8.dp)
+        .padding(start = 8.dp, bottom = bottomOverlayPadding + 8.dp)
         .clip(RoundedCornerShape(4.dp))
         .background(ObsidianContainer.copy(alpha = 0.9f))
         .border(0.5.dp, TacticalOutlineVariant.copy(alpha = 0.5f), RoundedCornerShape(4.dp))

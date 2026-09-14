@@ -6,10 +6,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -54,6 +57,7 @@ import com.example.ui.theme.ObsidianContainer
 import com.example.ui.theme.ObsidianContainerHigh
 import com.example.ui.theme.ObsidianContainerLow
 import com.example.ui.theme.ObsidianSurface
+import com.example.ui.theme.OnNeonEmerald
 import com.example.ui.theme.TacticalCyan
 import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.TacticalOnSurfaceVariant
@@ -68,6 +72,7 @@ import com.example.ui.theme.WarningAmber
  * shelter ranking/relocation-priority engines because vulnerable categories
  * and the medical-support flag are inputs to them.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EditProfileDialog(
   profile: UserProfile,
@@ -96,7 +101,9 @@ fun EditProfileDialog(
         modifier = Modifier
           .padding(20.dp)
           .fillMaxWidth()
-          .verticalScroll(rememberScrollState()),
+          .verticalScroll(rememberScrollState())
+          // Keep Save Profile reachable while the keyboard is open.
+          .imePadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         Row(
@@ -154,19 +161,15 @@ fun EditProfileDialog(
         )
 
         // Blood group chip selector
+        // FlowRow wraps chips naturally — no overflow at 360dp or large font scales.
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
           Text("BLOOD GROUP", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = EmergencyRedBright, letterSpacing = 0.5.sp)
-          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            bloodGroups.take(4).forEach { group ->
-              BloodGroupChip(
-                label = group,
-                selected = bloodGroup == group,
-                onClick = { bloodGroup = group }
-              )
-            }
-          }
-          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            bloodGroups.drop(4).forEach { group ->
+          FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            bloodGroups.forEach { group ->
               BloodGroupChip(
                 label = group,
                 selected = bloodGroup == group,
@@ -354,7 +357,7 @@ fun EditProfileDialog(
             .height(44.dp)
             .testTag("save_profile_button")
         ) {
-          Text("Save Profile", fontWeight = FontWeight.Bold, color = Color(0xFF003822))
+          Text("Save Profile", fontWeight = FontWeight.Bold, color = OnNeonEmerald)
         }
       }
     }

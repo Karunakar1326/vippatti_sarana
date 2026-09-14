@@ -13,10 +13,13 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -57,6 +60,7 @@ import com.example.ui.theme.NeonEmerald
 import com.example.ui.theme.ObsidianContainerHigh
 import com.example.ui.theme.ObsidianContainerLow
 import com.example.ui.theme.ObsidianSurface
+import com.example.ui.theme.OnNeonEmerald
 import com.example.ui.theme.TacticalCyan
 import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.TacticalOnSurfaceVariant
@@ -75,6 +79,7 @@ import com.example.ui.theme.WarningAmber
  *     EmergencyReport relayed through EmergencyReportService to the NDRF
  *     ward dispatcher.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SituationReportDialog(
   reporterName: String,
@@ -125,7 +130,9 @@ fun SituationReportDialog(
         modifier = Modifier
           .padding(20.dp)
           .fillMaxWidth()
-          .verticalScroll(rememberScrollState()),
+          .verticalScroll(rememberScrollState())
+          // Keep the NDRF submit button reachable while the keyboard is open.
+          .imePadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
         Row(
@@ -183,17 +190,15 @@ fun SituationReportDialog(
         }
 
         // --- Quick situation tags -------------------------------------------
+        // FlowRow wraps tags naturally — no overflow at 360dp or large font scales.
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
           Text("QUICK TAGS", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurfaceVariant, letterSpacing = 0.5.sp)
-          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            quickTags.take(3).forEach { tag ->
-              QuickTagChip(label = tag) {
-                description = if (description.isBlank()) tag else "${description.trimEnd()} | $tag"
-              }
-            }
-          }
-          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            quickTags.drop(3).forEach { tag ->
+          FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            quickTags.forEach { tag ->
               QuickTagChip(label = tag) {
                 description = if (description.isBlank()) tag else "${description.trimEnd()} | $tag"
               }
@@ -306,12 +311,12 @@ fun SituationReportDialog(
             .height(44.dp)
             .testTag("situation_submit_button")
         ) {
-          Icon(Icons.Default.Send, contentDescription = null, tint = Color(0xFF003822), modifier = Modifier.size(16.dp))
+          Icon(Icons.Default.Send, contentDescription = null, tint = OnNeonEmerald, modifier = Modifier.size(16.dp))
           Spacer(modifier = Modifier.width(6.dp))
           Text(
             if (isSubmitting) "Relaying to NDRF dispatcher..." else "SEND REPORT TO NDRF 112",
             fontWeight = FontWeight.Bold,
-            color = Color(0xFF003822),
+            color = OnNeonEmerald,
             fontSize = 12.sp
           )
         }

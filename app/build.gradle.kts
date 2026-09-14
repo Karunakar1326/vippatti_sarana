@@ -56,7 +56,14 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      // Robolectric NATIVE-graphics Compose rendering of full screens needs a
+      // roomy heap — prevents Java heap space OOM in the responsive layout tests.
+      all { it.maxHeapSize = "3g" }
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
