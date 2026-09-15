@@ -579,6 +579,365 @@ private fun InfoPill(label: String, value: String, accent: Color) {
 }
 
 // ============================================================================
+// DISASTER EVENT DETAIL - tapped USGS/FIRMS/IMD/user-report marker. Every
+// field renders from the REAL event; missing data says "Not available" —
+// nothing is invented.
+// ============================================================================
+
+@Composable
+fun DisasterEventDetailDialog(
+  event: com.example.data.disaster.DisasterEvent,
+  onDismiss: () -> Unit
+) {
+  val freshness = com.example.data.disaster.DisasterCachePolicy.label(
+    event.updatedAtMillis,
+    System.currentTimeMillis()
+  )
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(
+      shape = RoundedCornerShape(20.dp),
+      color = ObsidianSurface,
+      modifier = Modifier
+        .fillMaxWidth()
+        .border(1.dp, TacticalOutlineVariant, RoundedCornerShape(20.dp))
+    ) {
+      Column(
+        modifier = Modifier
+          .padding(20.dp)
+          .fillMaxWidth()
+          // Detail content scrolls instead of clipping on short screens.
+          .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Column {
+            Text(
+              text = event.disasterType.label.uppercase(),
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Black,
+              color = EmergencyRedBright,
+              letterSpacing = 0.8.sp
+            )
+            Text(
+              text = event.title,
+              fontSize = 15.sp,
+              fontWeight = FontWeight.Bold,
+              color = TacticalOnSurface,
+              lineHeight = 19.sp
+            )
+          }
+          IconButton(onClick = onDismiss) {
+            Icon(Icons.Default.Close, contentDescription = "Close", tint = TacticalOnSurfaceVariant)
+          }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          InfoPill("SEVERITY", event.severity.label.uppercase(), EmergencyRedBright)
+          InfoPill("STATUS", event.status.label.uppercase(), TacticalCyan)
+          InfoPill("DATA", freshness.uppercase(), TacticalCyan)
+        }
+
+        // Source / provider provenance.
+        DetailLine("Source / provider", event.source.label)
+        DetailLine(
+          "Data state",
+          when (event.origin) {
+            com.example.data.disaster.EventOrigin.OBSERVED -> "Observed (provider measurement)"
+            com.example.data.disaster.EventOrigin.REPORTED -> "Reported by a citizen - UNVERIFIED"
+            com.example.data.disaster.EventOrigin.DERIVED -> "Derived from provider data"
+            com.example.data.disaster.EventOrigin.SIMULATED -> "Simulated pilot data"
+          }
+        )
+        DetailLine(
+          "Observed at",
+          if (event.observedAtMillis > 0L) {
+            java.text.SimpleDateFormat(
+              "MMM d, yyyy HH:mm",
+              java.util.Locale.getDefault()
+            ).format(java.util.Date(event.observedAtMillis))
+          } else {
+            "Not available"
+          }
+        )
+        DetailLine(
+          "Location",
+          when (val g = event.geometry) {
+            is com.example.data.disaster.EventGeometry.Point ->
+              String.format(java.util.Locale.US, "%.4f, %.4f", g.lat, g.lon)
+            is com.example.data.disaster.EventGeometry.MultiPoint ->
+              "${g.points.size} points (first: " + String.format(
+                java.util.Locale.US, "%.4f, %.4f", g.points.first().lat, g.points.first().lon
+              ) + ")"
+            is com.example.data.disaster.EventGeometry.Line ->
+              "Track with ${g.points.size} points"
+            is com.example.data.disaster.EventGeometry.Polygon ->
+              "Alert area polygon (${g.ring.size} vertices)"
+            is com.example.data.disaster.EventGeometry.RasterLayer ->
+              "Raster layer: ${g.title}"
+          }
+        )
+        when (val d = event.details) {
+          is com.example.data.disaster.EventDetails.Quake -> {
+            DetailLine("Magnitude", d.magnitude.toString())
+            DetailLine("Depth", "${d.depthKm} km")
+            DetailLine("Place", d.place.ifBlank { "Not available" })
+          }
+          is com.example.data.disaster.EventDetails.Fire -> {
+            DetailLine("Satellite", d.satellite.ifBlank { "Not available" })
+            DetailLine("Instrument", d.instrument.ifBlank { "Not available" })
+            DetailLine(
+              "Fire radiative power",
+              d.frpMegawatts?.let { "$it MW" } ?: "Not available"
+            )
+            DetailLine("Day/night", d.dayNight ?: "Not available")
+          }
+          is com.example.data.disaster.EventDetails.OfficialAlert -> {
+            DetailLine("Alert event", d.event)
+            DetailLine("Issued by", d.senderName)
+            DetailLine("Urgency / certainty", "${d.urgency} / ${d.certainty}")
+            DetailLine("Instruction", d.instruction ?: "Not available")
+          }
+          is com.example.data.disaster.EventDetails.UserIncident -> {
+            DetailLine("Category", d.categoryLabel)
+            DetailLine("Reporter note", d.reporterNote.ifBlank { "Not available" })
+          }
+          com.example.data.disaster.EventDetails.Generic -> Unit
+        }
+        DetailLine(
+          "Confidence",
+          when (event.confidence) {
+            com.example.data.disaster.EventConfidence.NOT_PROVIDED ->
+              "Not provided by source"
+            else -> event.confidence.label + (event.confidenceNote?.let { " ($it)" } ?: "")
+          }
+        )
+        event.affectedAreaLabel?.let { DetailLine("Affected area", it) }
+        event.description.takeIf { it.isNotBlank() }?.let {
+          Text(
+            text = it,
+            fontSize = 11.sp,
+            color = TacticalOnSurfaceVariant,
+            lineHeight = 15.sp
+          )
+        }
+        if (event.url != null) {
+          val context = androidx.compose.ui.platform.LocalContext.current
+          Button(
+            onClick = {
+              context.startActivity(
+                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(event.url))
+              )
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald, contentColor = OnNeonEmerald),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(44.dp)
+          ) {
+            Text("Open official source", fontWeight = FontWeight.Bold)
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.Top
+  ) {
+    Text(
+      text = label,
+      fontSize = 11.sp,
+      color = TacticalOnSurfaceVariant,
+      modifier = Modifier.weight(0.42f)
+    )
+    Text(
+      text = value,
+      fontSize = 11.sp,
+      fontWeight = FontWeight.SemiBold,
+      color = TacticalOnSurface,
+      lineHeight = 14.sp,
+      modifier = Modifier.weight(0.58f)
+    )
+  }
+}
+
+// ============================================================================
+// USER INCIDENT REPORT - "Add a Report" flow. Submissions are stored locally
+// as USER_REPORT / REPORTED / unverified events with a TTL; they are never
+// presented as verified disasters.
+// ============================================================================
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+fun IncidentReportDialog(
+  locationLabel: String,
+  isGpsAvailable: Boolean,
+  onDismiss: () -> Unit,
+  onSubmit: (category: com.example.data.disaster.IncidentCategory, severityLabel: String, description: String) -> Unit
+) {
+  var selectedCategory by remember {
+    mutableStateOf(com.example.data.disaster.IncidentCategory.ROAD_BLOCKED)
+  }
+  var selectedSeverity by remember { mutableStateOf("Moderate") }
+  var description by remember { mutableStateOf("") }
+  val severityOptions = listOf("Low", "Moderate", "High", "Extreme")
+
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(
+      shape = RoundedCornerShape(20.dp),
+      color = ObsidianSurface,
+      modifier = Modifier.fillMaxWidth()
+    ) {
+      Column(
+        modifier = Modifier
+          .padding(20.dp)
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          // Keep Submit reachable while the keyboard is open.
+          .imePadding(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Column {
+            Text(
+              text = "Add a Report",
+              fontSize = 16.sp,
+              fontWeight = FontWeight.Bold,
+              color = TacticalOnSurface
+            )
+            Text(
+              text = "Shown on the map as an UNVERIFIED user report",
+              fontSize = 11.sp,
+              color = TacticalOnSurfaceVariant
+            )
+          }
+          IconButton(onClick = onDismiss) {
+            Icon(Icons.Default.Close, contentDescription = "Close", tint = TacticalOnSurfaceVariant)
+          }
+        }
+
+        if (!isGpsAvailable) {
+          Text(
+            text = "GPS unavailable — reports attach a generic India-centre location until a device fix is available.",
+            fontSize = 10.sp,
+            color = WarningAmber,
+            lineHeight = 13.sp
+          )
+        }
+
+        Text(
+          "CATEGORY",
+          fontSize = 10.sp,
+          fontWeight = FontWeight.Bold,
+          color = TacticalOnSurfaceVariant,
+          letterSpacing = 0.5.sp
+        )
+        // FlowRow wraps categories naturally at 360dp and large font scales.
+        androidx.compose.foundation.layout.FlowRow(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+          com.example.data.disaster.IncidentCategory.entries.forEach { category ->
+            Box(
+              modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(
+                  if (category == selectedCategory) NeonEmerald.copy(alpha = 0.2f) else ObsidianContainerHigh
+                )
+                .border(
+                  1.dp,
+                  if (category == selectedCategory) NeonEmerald else TacticalOutlineVariant.copy(alpha = 0.5f),
+                  RoundedCornerShape(8.dp)
+                )
+                .clickable { selectedCategory = category }
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+              Text(
+                text = category.label,
+                fontSize = 11.sp,
+                fontWeight = if (category == selectedCategory) FontWeight.Bold else FontWeight.Medium,
+                color = if (category == selectedCategory) NeonEmerald else TacticalOnSurface
+              )
+            }
+          }
+        }
+
+        Text(
+          "SEVERITY",
+          fontSize = 10.sp,
+          fontWeight = FontWeight.Bold,
+          color = TacticalOnSurfaceVariant,
+          letterSpacing = 0.5.sp
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+          severityOptions.forEach { option ->
+            Box(
+              modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (option == selectedSeverity) EmergencyRedContainer.copy(alpha = 0.3f) else ObsidianContainerHigh)
+                .border(
+                  1.dp,
+                  if (option == selectedSeverity) EmergencyRedBright else TacticalOutlineVariant.copy(alpha = 0.5f),
+                  RoundedCornerShape(8.dp)
+                )
+                .clickable { selectedSeverity = option }
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+              Text(
+                text = option,
+                fontSize = 11.sp,
+                fontWeight = if (option == selectedSeverity) FontWeight.Bold else FontWeight.Medium,
+                color = if (option == selectedSeverity) EmergencyRedBright else TacticalOnSurface
+              )
+            }
+          }
+        }
+
+        OutlinedTextField(
+          value = description,
+          onValueChange = { description = it },
+          label = { Text("What are you seeing? (optional)", fontSize = 12.sp) },
+          minLines = 2,
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = NeonEmerald,
+            unfocusedBorderColor = TacticalOutlineVariant,
+            focusedTextColor = TacticalOnSurface,
+            unfocusedTextColor = TacticalOnSurface
+          ),
+          modifier = Modifier.fillMaxWidth()
+        )
+
+        DetailLine("Reporting location", locationLabel)
+
+        Button(
+          onClick = { onSubmit(selectedCategory, selectedSeverity, description) },
+          colors = ButtonDefaults.buttonColors(containerColor = NeonEmerald, contentColor = OnNeonEmerald),
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .testTag("submit_incident_button")
+        ) {
+          Text("Submit Report", fontWeight = FontWeight.Bold)
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
 // SAFE ZONE DETAIL ? full carrying-capacity & resource intelligence
 // ============================================================================
 

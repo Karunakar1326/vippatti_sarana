@@ -47,6 +47,18 @@ data class RouteResult(
   /** Destination label (e.g. shelter name). */
   val destinationName: String = "Safe Zone"
 ) {
+  /**
+   * Stable content-derived identity (derived once from distance, path length
+   * and path content). List UI must compare routes by this id — never by
+   * object identity (===), because state copies create equal-but-distinct
+   * instances.
+   */
+  val routeId: String
+
+  init {
+    routeId = "route-${distanceMeters.roundToInt()}-${pathPoints.size}-${pathPoints.hashCode()}"
+  }
+
   val isReroutable: Boolean get() = hazardWarnings.any { it.isBlocking }
 }
 

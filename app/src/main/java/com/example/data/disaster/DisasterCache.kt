@@ -126,8 +126,10 @@ internal fun serializeEvent(event: DisasterEvent): JSONObject = JSONObject()
   .put("type", event.disasterType.name)
   .put("title", event.title)
   .put("description", event.description)
-  .put("lat", event.latitude ?: Double.NaN)
-  .put("lon", event.longitude ?: Double.NaN)
+  // JSON has no NaN: absent coordinates are stored as JSON null (never a
+  // fabricated number). Polygon/line events legitimately have no point fix.
+  .put("lat", event.latitude?.takeIf { !it.isNaN() } ?: JSONObject.NULL)
+  .put("lon", event.longitude?.takeIf { !it.isNaN() } ?: JSONObject.NULL)
   .put("severity", event.severity.name)
   .put("confidence", event.confidence.name)
   .put("confidenceNote", event.confidenceNote ?: "")
@@ -139,11 +141,12 @@ internal fun serializeEvent(event: DisasterEvent): JSONObject = JSONObject()
   .put("affectedArea", event.affectedAreaLabel ?: "")
   .put("url", event.url ?: "")
   .put("geometryType", event.geometry.type.name)
-  .put("polygon", JSONArray().apply {
-    (event.geometry as? EventGeometry.Polygon)?.ring?.forEach { p ->
-      put(JSONObject().put("lat", p.lat).put("lon", p.lon))
-    }
-  })
+  .put("polygon", serializePointList((event.geometry as? EventGeometry.Polygon)?.ring))
+  .put("points", serializePointList((event.geometry as? EventGeometry.MultiPoint)?.points))
+  .put("line", serializePointList((event.geometry as? EventGeometry.Line)?.points))
+  .put("rasterLayerId", (event.geometry as? EventGeometry.RasterLayer)?.layerId ?: "")
+  .put("rasterLayerTitle", (event.geometry as? EventGeometry.RasterLayer)?.title ?: "")
+  .put("details", serializeDetails(event.details))
 
 internal fun deserializeEvent(obj: JSONObject): DisasterEvent? {
   val source = runCatching { DisasterSource.valueOf(obj.optString("source")) }.getOrNull()
@@ -157,30 +160,27 @@ internal fun deserializeEvent(obj: JSONObject): DisasterEvent? {
 
   val geometry = when (obj.optString("geometryType")) {
     GeometryType.POLYGON.name -> {
-      val ring = mutableListOf<GeoPoint>()
-      val arr = obj.optJSONArray("polygon")
-      if (arr != null) {
-        for (i in 0 until arr.length()) {
-          val p = arr.optJSONObject(i) ?: continue
-          val lat = p.optDouble("lat", Double.NaN)
-          val lon = p.optDouble("lon", Double.NaN)
-          if (!lat.isNaN() && !lon.isNaN()) ring += GeoPoint(lat, lon)
-        }
-      }
-      if (ring.size >= 3) EventGeometry.Polygon(ring) else EventGeometry.Point(
-        IndiaGeo.CENTER_LAT, IndiaGeo.CENTER_LON
-      )
+      val ring = deserializePointList(obj.optJSONArray("polygon"))
+      if (ring.size >= 3) EventGeometry.Polygon(ring) else degradedGeometry(obj)
     }
-    else -> {
-      val lat = obj.optDouble("lat", Double.NaN)
-      val lon = obj.optDouble("lon", Double.NaN)
-      if (lat.isNaN() || lon.isNaN()) {
-        EventGeometry.Point(IndiaGeo.CENTER_LAT, IndiaGeo.CENTER_LON)
+    GeometryType.MULTIPOINT.name -> {
+      val points = deserializePointList(obj.optJSONArray("points"))
+      if (points.isNotEmpty()) EventGeometry.MultiPoint(points) else degradedGeometry(obj)
+    }
+    GeometryType.LINE.name -> {
+      val points = deserializePointList(obj.optJSONArray("line"))
+      if (points.size >= 2) EventGeometry.Line(points) else degradedGeometry(obj)
+    }
+    GeometryType.RASTER_LAYER.name -> {
+      val layerId = obj.optString("rasterLayerId")
+      if (layerId.isNotBlank()) {
+        EventGeometry.RasterLayer(layerId, obj.optString("rasterLayerTitle").ifBlank { layerId })
       } else {
-        EventGeometry.Point(lat, lon)
+        degradedGeometry(obj)
       }
     }
-  }
+    else -> degradedGeometry(obj)
+  } ?: return null // unlocatable shard — dropped, never pinned to a fake spot
 
   return DisasterEvent(
     id = obj.optString("id").ifBlank { "cached-${source.name}-$sourceEventId" },
@@ -205,7 +205,140 @@ internal fun deserializeEvent(obj: JSONObject): DisasterEvent? {
       .getOrDefault(EventOrigin.OBSERVED),
     affectedAreaLabel = obj.optString("affectedArea").takeIf { it.isNotBlank() },
     url = obj.optString("url").takeIf { it.isNotBlank() },
-    details = deserializeDetails(obj.optJSONObject("details"))
+    details = legacyDetails(obj, type)
   )
 }
+
+// ============================================================================
+// Geometry + EventDetails round-trip helpers.
+//
+// Honest-corruption policy: a shard that cannot fully reconstruct a complex
+// geometry degrades to the stored point coordinates when available — never to
+// invented coordinates. When no usable location was persisted, the event is
+// DROPPED (null) instead of being pinned to the India centre, which would
+// fabricate a hazard over central India.
+// ============================================================================
+
+private fun serializePointList(points: List<GeoPoint>?): JSONArray = JSONArray().apply {
+  points?.forEach { p -> put(JSONObject().put("lat", p.lat).put("lon", p.lon)) }
+}
+
+private fun deserializePointList(arr: JSONArray?): List<GeoPoint> {
+  if (arr == null) return emptyList()
+  val out = mutableListOf<GeoPoint>()
+  for (i in 0 until arr.length()) {
+    val p = arr.optJSONObject(i) ?: continue
+    val lat = p.optDouble("lat", Double.NaN)
+    val lon = p.optDouble("lon", Double.NaN)
+    if (!lat.isNaN() && !lon.isNaN()) out += GeoPoint(lat, lon)
+  }
+  return out
+}
+
+/** Resolves the stored point fields for a degraded geometry fallback. */
+private fun storedPoint(obj: JSONObject): GeoPoint? {
+  val lat = obj.optDouble("lat", Double.NaN)
+  val lon = obj.optDouble("lon", Double.NaN)
+  return if (!lat.isNaN() && !lon.isNaN()) GeoPoint(lat, lon) else null
+}
+
+/**
+ * Degraded-geometry fallback: reuse the stored point coordinates when they
+ * exist; when none were persisted the shard cannot be located honestly, so
+ * null DROPS the event instead of fabricating a location for it.
+ */
+private fun degradedGeometry(obj: JSONObject): EventGeometry? {
+  val stored = storedPoint(obj) ?: return null
+  return EventGeometry.Point(stored.lat, stored.lon)
+}
+
+internal fun serializeDetails(details: EventDetails): JSONObject = when (details) {
+  is EventDetails.Quake -> JSONObject()
+    .put(KIND, DETAILS_QUAKE)
+    .put("magnitude", details.magnitude)
+    .put("depthKm", details.depthKm)
+    .put("place", details.place)
+    .put("url", details.url ?: "")
+
+  is EventDetails.Fire -> JSONObject()
+    .put(KIND, DETAILS_FIRE)
+    .put("satellite", details.satellite)
+    .put("instrument", details.instrument)
+    .put("frpMegawatts", details.frpMegawatts ?: JSONObject.NULL)
+    .put("dayNight", details.dayNight ?: "")
+
+  is EventDetails.OfficialAlert -> JSONObject()
+    .put(KIND, DETAILS_OFFICIAL_ALERT)
+    .put("event", details.event)
+    .put("urgency", details.urgency)
+    .put("certainty", details.certainty)
+    .put("senderName", details.senderName)
+    .put("instruction", details.instruction ?: "")
+    .put("webLink", details.webLink ?: "")
+
+  is EventDetails.UserIncident -> JSONObject()
+    .put(KIND, DETAILS_USER_INCIDENT)
+    .put("categoryLabel", details.categoryLabel)
+    .put("reporterNote", details.reporterNote)
+
+  EventDetails.Generic -> JSONObject().put(KIND, DETAILS_GENERIC)
+}
+
+internal fun deserializeDetails(obj: JSONObject?): EventDetails {
+  if (obj == null) return EventDetails.Generic
+  return when (obj.optString(KIND)) {
+    DETAILS_QUAKE -> EventDetails.Quake(
+      magnitude = obj.optDouble("magnitude", Double.NaN),
+      depthKm = obj.optDouble("depthKm", 0.0),
+      place = obj.optString("place"),
+      url = obj.optString("url").takeIf { it.isNotBlank() }
+    )
+    DETAILS_FIRE -> EventDetails.Fire(
+      satellite = obj.optString("satellite"),
+      instrument = obj.optString("instrument"),
+      frpMegawatts = obj.optDouble("frpMegawatts", Double.NaN).takeIf { !it.isNaN() },
+      dayNight = obj.optString("dayNight").takeIf { it.isNotBlank() }
+    )
+    DETAILS_OFFICIAL_ALERT -> EventDetails.OfficialAlert(
+      event = obj.optString("event"),
+      urgency = obj.optString("urgency"),
+      certainty = obj.optString("certainty"),
+      senderName = obj.optString("senderName"),
+      instruction = obj.optString("instruction").takeIf { it.isNotBlank() },
+      webLink = obj.optString("webLink").takeIf { it.isNotBlank() }
+    )
+    DETAILS_USER_INCIDENT -> EventDetails.UserIncident(
+      categoryLabel = obj.optString("categoryLabel"),
+      reporterNote = obj.optString("reporterNote")
+    )
+    else -> EventDetails.Generic
+  }
+}
+
+/**
+ * Backward compatibility: shards written before details serialization existed
+ * carry a magnitude field on the event root (written by the original broken
+ * attempt) or nothing at all. Recover magnitude for earthquakes; otherwise the
+ * event keeps an honest Generic payload.
+ */
+internal fun legacyDetails(obj: JSONObject, type: DisasterType): EventDetails {
+  if (obj.has("details")) return deserializeDetails(obj.optJSONObject("details"))
+  val magnitude = obj.optDouble("magnitude", Double.NaN)
+  if (type == DisasterType.EARTHQUAKE && !magnitude.isNaN()) {
+    return EventDetails.Quake(
+      magnitude = magnitude,
+      depthKm = obj.optDouble("depthKm", 0.0),
+      place = obj.optString("title").ifBlank { "Location not provided by source" },
+      url = obj.optString("url").takeIf { it.isNotBlank() }
+    )
+  }
+  return EventDetails.Generic
+}
+
+private const val KIND = "kind"
+private const val DETAILS_QUAKE = "QUAKE"
+private const val DETAILS_FIRE = "FIRE"
+private const val DETAILS_OFFICIAL_ALERT = "OFFICIAL_ALERT"
+private const val DETAILS_USER_INCIDENT = "USER_INCIDENT"
+private const val DETAILS_GENERIC = "GENERIC"
 

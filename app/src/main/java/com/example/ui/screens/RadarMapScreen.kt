@@ -74,12 +74,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.WeatherMetrics
+import com.example.data.disaster.DisasterCachePolicy
+import com.example.data.disaster.DisasterEvent
+import com.example.data.disaster.DisasterLayer
+import com.example.data.disaster.DisasterSource
+import com.example.data.disaster.IncidentCategory
 import com.example.data.model.SafeZone
 import com.example.data.routing.OsrmRoutingService
 import com.example.data.routing.RouteSafetyStatus
 import com.example.data.risk.RiskLevel
 import com.example.data.shelters.SafeZoneEvaluation
 import com.example.data.shelters.SafeZoneEvaluator
+import com.example.ui.components.DisasterEventDetailDialog
 import com.example.ui.components.OsmDroidRadarMapView
 import com.example.ui.theme.EmergencyRed
 import com.example.ui.theme.EmergencyRedBright
@@ -132,6 +138,12 @@ fun RadarMapScreen(
   onRealGpsFix: (latitude: Double, longitude: Double) -> Unit,
   onOpenHazardDetail: (com.example.data.model.HazardZone) -> Unit,
   onOpenSafeZoneDetail: (SafeZone) -> Unit,
+  // --- REAL disaster-data integration (audit items 3/5/6/7) ---
+  onToggleLayer: (DisasterLayer) -> Unit,
+  onOpenIncidentReport: () -> Unit,
+  onSubmitIncidentReport: (IncidentCategory, String, String) -> Unit,
+  onOpenDisasterEventDetail: (DisasterEvent) -> Unit,
+  onDismissDisasterEventDetail: () -> Unit,
   modifier: Modifier = Modifier
 ) {
   var isSheetExpanded by remember { mutableStateOf(true) }
@@ -174,6 +186,9 @@ fun RadarMapScreen(
       onHazardZoneTapped = onOpenHazardDetail,
       onSafeZoneTapped = onOpenSafeZoneDetail,
       onRealGpsFix = onRealGpsFix,
+      disasterEvents = uiState.disasterEvents,
+      enabledLayers = uiState.enabledLayers,
+      onDisasterEventTapped = onOpenDisasterEventDetail,
       modifier = Modifier.fillMaxSize(),
       topOverlayPadding = topOverlayPadding + 8.dp,
       bottomOverlayPadding = animatedSheetHeight
@@ -217,6 +232,15 @@ fun RadarMapScreen(
           )
         }
       }
+
+      // 2b. DATA STATUS + LAYER TOGGLES + REPORT INCIDENT — one compact
+      //      horizontally scrollable chip row; never covers the whole map.
+      DisasterStatusLayerRow(
+        uiState = uiState,
+        onToggleLayer = onToggleLayer,
+        onOpenIncidentReport = onOpenIncidentReport
+      )
+
 
       // 3. Live turn-by-turn HUD — directly under the risk strip while
       //    guidance is active, always following the SELECTED destination's
@@ -484,7 +508,9 @@ private fun SafeZoneCarousel(
         val isSelected = zone.id == selectedId
         SafeZoneCard(
           zone = zone,
-          evaluation = uiState.rankedShelters.firstOrNull { it.zone.id == zone.id },
+          // Full evaluation (feasible AND rejected) — rejected shelters show
+          // their real rejection reason instead of a blank generic card.
+          evaluation = uiState.evaluatedShelters.firstOrNull { it.zone.id == zone.id },
           isSelected = isSelected,
           isCalculatingRoute = uiState.isCalculatingRoute && isSelected,
           onSelect = { onSelectSafeZone(zone) },
@@ -788,21 +814,27 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
       tint = TacticalCyan,
       modifier = Modifier.weight(1f)
     )
+    // 3-HR TREND — shown ONLY when a real trend is present. The pilot model
+    // ships no live weather feed, so the default is an honest neutral line;
+    // a "Worsening" claim without a source would fabricate weather state.
+    val hasRealTrend = weather.trend3h.isNotBlank()
     Row(
       modifier = Modifier.weight(1.2f),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-      Icon(
-        imageVector = if (weather.trend3h.contains("Worsen", ignoreCase = true)) {
-          Icons.Default.TrendingDown
-        } else {
-          Icons.Default.TrendingUp
-        },
-        contentDescription = null,
-        tint = if (weather.trend3h.contains("Worsen", ignoreCase = true)) EmergencyRedBright else NeonEmerald,
-        modifier = Modifier.size(15.dp)
-      )
+      if (hasRealTrend) {
+        Icon(
+          imageVector = if (weather.trend3h.contains("Worsen", ignoreCase = true)) {
+            Icons.Default.TrendingDown
+          } else {
+            Icons.Default.TrendingUp
+          },
+          contentDescription = null,
+          tint = if (weather.trend3h.contains("Worsen", ignoreCase = true)) EmergencyRedBright else NeonEmerald,
+          modifier = Modifier.size(15.dp)
+        )
+      }
       Column {
         Text(
           text = "3-HR TREND",
@@ -812,14 +844,134 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
           letterSpacing = 0.5.sp
         )
         Text(
-          text = weather.trend3h,
+          text = if (hasRealTrend) weather.trend3h else "No live trend data",
           fontSize = 10.sp,
           fontWeight = FontWeight.Bold,
-          color = if (weather.trend3h.contains("Worsen", ignoreCase = true)) EmergencyRedBright else NeonEmerald,
+          color = if (hasRealTrend && weather.trend3h.contains("Worsen", ignoreCase = true)) {
+            EmergencyRedBright
+          } else {
+            TacticalOnSurfaceVariant
+          },
           maxLines = 1
         )
       }
     }
+  }
+}
+
+// ============================================================================
+// DATA STATUS + LAYER TOGGLES + REPORT INCIDENT — compact single chip row.
+// Honest provenance: LIVE never appears while data is only cached; DEMO is
+// labeled explicitly; every toggle changes real map visibility.
+// ============================================================================
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun DisasterStatusLayerRow(
+  uiState: VippattiUiState,
+  onToggleLayer: (DisasterLayer) -> Unit,
+  onOpenIncidentReport: () -> Unit
+) {
+  val statusColor = when {
+    uiState.isDisasterDataLive -> NeonEmerald
+    uiState.providerStates.any { it.isFromCache } -> TacticalCyan
+    uiState.providerStates.any { it.statusMessage != null } -> WarningAmber
+    else -> TacticalOnSurfaceVariant
+  }
+  LazyRow(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(vertical = 2.dp),
+    contentPadding = PaddingValues(horizontal = 10.dp),
+    horizontalArrangement = Arrangement.spacedBy(6.dp)
+  ) {
+    // Aggregate provider status chip (LIVE/CACHED/STALE/UNAVAILABLE — honest).
+    item {
+      StatusChip(
+        text = "DATA: ${uiState.disasterDataStatusLabel}",
+        color = statusColor,
+        testTag = "disaster_data_status_chip"
+      )
+    }
+    // Explicit DEMO chip — demo data can never masquerade as live.
+    if (uiState.isDemoMode) {
+      item {
+        StatusChip(text = "DEMO DATA ON", color = WarningAmber, testTag = "demo_mode_chip")
+      }
+    }
+    // Layer toggles — only layers the providers/data model actually support.
+    listOf(
+      DisasterLayer.EARTHQUAKES to "Quakes",
+      DisasterLayer.ACTIVE_FIRES to "Fires",
+      DisasterLayer.OFFICIAL_ALERTS to "Alerts",
+      DisasterLayer.USER_REPORTS to "My Reports",
+      DisasterLayer.SAFE_ZONES to "Shelters"
+    ).forEach { (layer, label) ->
+      item {
+        val enabled = layer in uiState.enabledLayers
+        Box(
+          modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (enabled) NeonEmeraldContainer.copy(alpha = 0.25f) else ObsidianContainer)
+            .border(
+              1.dp,
+              if (enabled) NeonEmerald.copy(alpha = 0.6f) else TacticalOutlineVariant.copy(alpha = 0.4f),
+              RoundedCornerShape(999.dp)
+            )
+            .clickable { onToggleLayer(layer) }
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+            .testTag("layer_toggle_${layer.name.lowercase()}")
+        ) {
+          Text(
+            text = label,
+            fontSize = 10.sp,
+            fontWeight = if (enabled) FontWeight.Bold else FontWeight.Medium,
+            color = if (enabled) NeonEmerald else TacticalOnSurfaceVariant,
+            maxLines = 1
+          )
+        }
+      }
+    }
+    // Citizen incident reporting entry point.
+    item {
+      Box(
+        modifier = Modifier
+          .clip(RoundedCornerShape(999.dp))
+          .background(EmergencyRedContainer.copy(alpha = 0.3f))
+          .border(1.dp, EmergencyRed.copy(alpha = 0.5f), RoundedCornerShape(999.dp))
+          .clickable { onOpenIncidentReport() }
+          .padding(horizontal = 10.dp, vertical = 5.dp)
+          .testTag("report_incident_button")
+      ) {
+        Text(
+          text = "+ Report Incident",
+          fontSize = 10.sp,
+          fontWeight = FontWeight.Bold,
+          color = EmergencyRedBright,
+          maxLines = 1
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun StatusChip(text: String, color: Color, testTag: String) {
+  Box(
+    modifier = Modifier
+      .clip(RoundedCornerShape(999.dp))
+      .background(ObsidianContainer.copy(alpha = 0.9f))
+      .border(1.dp, color.copy(alpha = 0.6f), RoundedCornerShape(999.dp))
+      .padding(horizontal = 10.dp, vertical = 5.dp)
+      .testTag(testTag)
+  ) {
+    Text(
+      text = text,
+      fontSize = 10.sp,
+      fontWeight = FontWeight.Bold,
+      color = color,
+      maxLines = 1
+    )
   }
 }
 
@@ -1281,7 +1433,9 @@ private fun RouteIntelligencePanel(
       LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         items(uiState.alternativeRoutes.size) { idx ->
           val alt = uiState.alternativeRoutes[idx]
-          val isPrimary = route?.let { primary -> alt === primary } ?: (idx == 0)
+          // Logical identity, not object identity: state copies create
+          // equal-but-distinct RouteResult instances.
+          val isPrimary = route != null && alt.routeId == route.routeId
           Box(
             modifier = Modifier
               .clip(RoundedCornerShape(8.dp))
@@ -1351,6 +1505,7 @@ private fun EvacuationCta(
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.CenterVertically
   ) {
+
     Row(
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.spacedBy(10.dp)

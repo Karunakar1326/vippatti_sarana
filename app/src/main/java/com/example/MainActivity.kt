@@ -38,8 +38,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.disaster.DisasterFileCache
 import com.example.data.news.NewsFileCache
 import com.example.ui.components.AddContactDialog
+import com.example.ui.components.DisasterEventDetailDialog
+import com.example.ui.components.IncidentReportDialog
 import com.example.ui.components.EditProfileDialog
 import com.example.ui.components.SituationReportDialog
 import com.example.ui.components.InteractiveBagDialog
@@ -67,13 +70,17 @@ class MainActivity : ComponentActivity() {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
     setContent {
-      // Production ViewModel: file-backed GNews cache survives app restarts.
+      // Production ViewModel: file-backed GNews cache AND file-backed disaster
+      // provider shards survive app restarts; the osmdroid tile-cache dir feeds
+      // the REAL offline map-cache size shown on the Profile screen.
       val viewModel: VippattiViewModel = viewModel(
         factory = object : ViewModelProvider.Factory {
           @Suppress("UNCHECKED_CAST")
           override fun <T : ViewModel> create(modelClass: Class<T>): T =
             VippattiViewModel(
-              newsCache = NewsFileCache(File(cacheDir, "news_cache"))
+              newsCache = NewsFileCache(File(cacheDir, "news_cache")),
+              disasterCache = DisasterFileCache(File(cacheDir, "disaster_cache")),
+              tileCacheDirProvider = { File(cacheDir, "osmdroid/tiles") }
             ) as T
         }
       )
@@ -161,6 +168,9 @@ fun VippattiAppRoot(
     }
   }
 
+  // Measure the REAL osmdroid tile-cache size for the Profile honesty card.
+  LaunchedEffect(Unit) { viewModel.updateTileCacheBytes() }
+
   LaunchedEffect(uiState.snackbarMessage) {
     uiState.snackbarMessage?.let { message ->
       snackbarHostState.showSnackbar(message)
@@ -236,7 +246,7 @@ fun VippattiAppRoot(
             onNavigateTab = { viewModel.setTab(it) }
           )
 
-          ScreenTab.RADAR_MAP -> RadarMapScreen(
+          ScreenTab.          RADAR_MAP -> RadarMapScreen(
             uiState = uiState,
             onSelectBestSafeZone = { viewModel.selectBestSafeZone() },
             onSelectSafeZone = { viewModel.selectSafeZone(it) },
@@ -250,7 +260,15 @@ fun VippattiAppRoot(
             // REAL hardware GPS fixes replace the static pilot location (Painavu, Idukki, Kerala, India).
             onRealGpsFix = { lat, lon -> viewModel.applyRealGpsFix(lat, lon) },
             onOpenHazardDetail = { viewModel.openHazardDetail(it) },
-            onOpenSafeZoneDetail = { viewModel.openSafeZoneDetail(it) }
+            onOpenSafeZoneDetail = { viewModel.openSafeZoneDetail(it) },
+            // REAL disaster-data integration: layers, incident reports, event details.
+            onToggleLayer = { viewModel.toggleLayer(it) },
+            onOpenIncidentReport = { viewModel.openIncidentReportDialog() },
+            onSubmitIncidentReport = { category, severity, description ->
+              viewModel.submitIncidentReport(category, severity, description)
+            },
+            onOpenDisasterEventDetail = { viewModel.openDisasterEventDetail(it) },
+            onDismissDisasterEventDetail = { viewModel.closeDisasterEventDetail() }
           )
 
           ScreenTab.INSTRUCTIONS -> InstructionsScreen(
@@ -322,6 +340,26 @@ fun VippattiAppRoot(
           items = uiState.goBagItems,
           onToggleItem = { viewModel.toggleGoBagItem(it) },
           onDismiss = { viewModel.closeInteractiveBagDialog() }
+        )
+      }
+
+      // REAL disaster-event detail (tapped USGS/FIRMS/IMD/user marker).
+      uiState.disasterEventDetail?.let { event ->
+        DisasterEventDetailDialog(
+          event = event,
+          onDismiss = viewModel::closeDisasterEventDetail
+        )
+      }
+
+      // Citizen incident reporting (USER_REPORT / REPORTED / unverified).
+      if (uiState.showIncidentReportDialog) {
+        IncidentReportDialog(
+          locationLabel = uiState.sosLocationLabel,
+          isGpsAvailable = !uiState.isUserLocationFallback,
+          onDismiss = viewModel::closeIncidentReportDialog,
+          onSubmit = { category, severityLabel, description ->
+            viewModel.submitIncidentReport(category, severityLabel, description)
+          }
         )
       }
 

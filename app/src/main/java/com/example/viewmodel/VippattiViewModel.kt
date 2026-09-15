@@ -170,10 +170,16 @@ data class VippattiUiState(
   // --- Intelligence results (recomputed on every location change) ---
   val hazardZones: List<HazardZone> = emptyList(),
   val safeZones: List<SafeZone> = PilotRegionData.safeZones,
+  /** EVERY shelter evaluated (feasible AND rejected) — UI must show rejection reasons. */
+  val evaluatedShelters: List<SafeZoneEvaluation> = emptyList(),
+  /** Feasible-only, best-first — feeds routing/assignment (unchanged contract). */
+  val rankedShelters: List<SafeZoneEvaluation> = emptyList(),
   val personalRisk: PersonalRiskAssessment? = null,
   val recommendedAction: RecommendedAction? = null,
-  val rankedShelters: List<SafeZoneEvaluation> = emptyList(),
   val relocationPlan: RelocationPlan? = null,
+
+  // --- REAL tile-cache size (computed from disk, never fabricated) ---
+  val tileCacheBytes: Long? = null,
 
   // --- Routing ---
   val selectedSafeZone: SafeZone? = null,
@@ -209,6 +215,48 @@ data class VippattiUiState(
   /** Relay targets for a distress broadcast: NDRF 112 + kin contact count. */
   val priorityRelaysLabel: String
     get() = "NDRF 112 & " + contactsList.size + " Kin Contacts"
+
+  /**
+   * Honest aggregate disaster-data status for the map UI. Derived ONLY from
+   * real provider states — a cached source is never labeled LIVE.
+   */
+  val disasterDataStatusLabel: String
+    get() {
+      if (providerStates.isEmpty()) return "NOT SYNCED"
+      val live = providerStates.count { it.isLive && it.eventCount >= 0 && it.statusMessage == null }
+      val cached = providerStates.count { it.isFromCache }
+      val degraded = providerStates.count { it.statusMessage != null }
+      val last = disasterLastSyncMillis
+      val stale = last != null && !com.example.data.disaster.DisasterCachePolicy.isRecent(last, System.currentTimeMillis())
+      val parts = mutableListOf<String>()
+      if (live > 0) parts += "LIVE"
+      if (cached > 0) parts += "CACHED"
+      if (degraded > 0) parts += "$degraded UNAVAILABLE"
+      if (parts.isEmpty()) parts += if (stale) "STALE" else "NO DATA"
+      return parts.joinToString(" • ")
+    }
+
+  /** Human-readable tile-cache size (e.g. "48.3 MB") or null until measured. */
+  val tileCacheSizeLabel: String?
+    get() = tileCacheBytes?.let { bytes ->
+      when {
+        bytes >= 1_000_000L -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1_000_000.0)
+        bytes >= 1_000L -> String.format(java.util.Locale.US, "%.0f KB", bytes / 1_000.0)
+        else -> "$bytes B"
+      }
+    }
+
+  /**
+   * Honest news-connection state for the Dispatches banner — derived from the
+   * real sync label the news pipeline produced, never hardcoded "OFFLINE".
+   */
+  val newsConnectionStateLabel: String
+    get() = when {
+      isSyncing -> "SYNCING…"
+      lastSyncTime.startsWith("ONLINE") -> "ONLINE • LIVE GNEWS FEED"
+      lastSyncTime.startsWith("CACHED") -> "OFFLINE • CACHED FEED"
+      else -> "NOT SYNCED"
+    }
 }
 
 class VippattiViewModel(
@@ -226,6 +274,12 @@ class VippattiViewModel(
    * in-memory by default (unit tests).
    */
   disasterCache: DisasterCache = MemoryDisasterCache(),
+  /**
+   * Directory of the osmdroid tile cache — injected by MainActivity so the
+   * offline map-cache size shown on the Profile screen is a REAL disk
+   * measurement (no fabricated "48 MB / 64 MB" values).
+   */
+  private val tileCacheDirProvider: () -> java.io.File? = { null },
   /**
    * REAL India-wide disaster data repository. Default: live USGS (keyless),
    * NASA FIRMS (free MAP_KEY via app/.env) and IMD official CAP alerts
@@ -336,7 +390,11 @@ class VippattiViewModel(
       hasVulnerableMembers = state.userProfile.vulnerableCategoryIds.isNotEmpty(),
       needsMedicalSupport = state.userProfile.needsMedicalSupport
     )
-    val ranked = SafeZoneEvaluator.ranked(zonesInScope, ctx)
+    // Evaluate EVERY candidate: feasible shelters are ranked; rejected ones
+    // carry their rejection reason so the UI can never present a full or
+    // hazard-trapped shelter as an eligible destination.
+    val evaluated = SafeZoneEvaluator.evaluateAll(zonesInScope, ctx)
+    val ranked = evaluated.filter { it.isFeasible }.sortedByDescending { it.score }
     val action = ActionAdvisor.recommend(risk, ranked)
     val plan = RelocationPlanner.plan(
       risk,
@@ -348,6 +406,7 @@ class VippattiViewModel(
       it.copy(
         personalRisk = risk,
         hazardZones = hazards,
+        evaluatedShelters = evaluated,
         rankedShelters = ranked,
         recommendedAction = action,
         relocationPlan = plan
@@ -492,7 +551,7 @@ class VippattiViewModel(
     }
     recomputeIntelligence()
     _uiState.update {
-      it.copy(snackbarMessage = "Report added — unverified user report shown on the map for others to verify.")
+      it.copy(snackbarMessage = "Report added: ${category.label} — UNVERIFIED user report shown on the map for others to verify.")
     }
   }
 
@@ -731,9 +790,9 @@ class VippattiViewModel(
         newsError = feed.error,
         lastSyncTime = when {
           feed.articles.isNotEmpty() && feed.isFromCache ->
-            "OFFLINE CACHE • ${feed.articles.size} articles • fetched $fetchedLabel"
+            "CACHED • ${feed.articles.size} articles • fetched $fetchedLabel"
           feed.articles.isNotEmpty() ->
-            "LIVE SYNC • ${feed.articles.size} articles • $fetchedLabel"
+            "ONLINE • ${feed.articles.size} articles • fetched $fetchedLabel"
           feed.error != null -> feed.error.userMessage
           else -> "No disaster news cached — tap Sync to fetch live articles"
         }
@@ -1001,6 +1060,19 @@ class VippattiViewModel(
           lastReportReceipt = receipt,
           snackbarMessage = receipt.note
         )
+      }
+    }
+  }
+
+  /** Measures the REAL osmdroid tile-cache size from disk (Profile honesty). */
+  fun updateTileCacheBytes() {
+    val dir = tileCacheDirProvider() ?: return
+    viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+      val bytes = runCatching {
+        dir.walkTopDown().filter { it.isFile }.map { it.length() }.sum()
+      }.getOrDefault(0L)
+      kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+        _uiState.update { it.copy(tileCacheBytes = bytes) }
       }
     }
   }

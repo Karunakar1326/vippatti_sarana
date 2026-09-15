@@ -78,7 +78,8 @@ object GeoMath {
     return sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy))
   }
 
-  /** Compact distance label, e.g. "840 m" or "12.3 km". */
+  /** Compact distance label, e.g. "840 m" or "12.3 km" (locale-stable). */
   fun formatKm(meters: Double): String =
-    if (meters >= 1000) String.format("%.1f km", meters / 1000.0) else String.format("%.0f m", meters)
+    if (meters >= 1000) String.format(java.util.Locale.US, "%.1f km", meters / 1000.0)
+    else String.format(java.util.Locale.US, "%.0f m", meters)
 }

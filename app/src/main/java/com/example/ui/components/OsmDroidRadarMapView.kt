@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -48,8 +49,16 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.preference.PreferenceManager
 import com.example.data.PilotRegionData
+import com.example.data.disaster.DisasterEvent
+import com.example.data.disaster.DisasterLayer
+import com.example.data.disaster.DisasterSource
+import com.example.data.disaster.DisasterType
+import com.example.data.disaster.EventGeometry
+import com.example.data.disaster.MarkerGeneralizer
+import com.example.data.model.HazardSeverity
 import com.example.data.model.HazardZone
 import com.example.data.model.SafeZone
+import com.example.data.routing.GeoPoint
 import com.example.data.routing.RouteResult
 import com.example.ui.theme.EmergencyRed
 import com.example.ui.theme.NeonEmerald
@@ -107,6 +116,12 @@ fun OsmDroidRadarMapView(
   onHazardZoneTapped: (HazardZone) -> Unit,
   onSafeZoneTapped: (SafeZone) -> Unit,
   onRealGpsFix: (latitude: Double, longitude: Double) -> Unit,
+  /** REAL provider events (USGS/FIRMS/IMD/user reports) rendered per layer toggles. */
+  disasterEvents: List<com.example.data.disaster.DisasterEvent> = emptyList(),
+  /** User-controlled layer visibility (all default-on layers behave as before). */
+  enabledLayers: Set<com.example.data.disaster.DisasterLayer> = com.example.data.disaster.DisasterLayer.entries.toSet(),
+  /** Tap on a rendered disaster event marker. */
+  onDisasterEventTapped: (com.example.data.disaster.DisasterEvent) -> Unit = {},
   modifier: Modifier = Modifier,
   // Overlay-aware spacing so the floating map controls / attribution banner
   // never sit underneath the screen's risk strip, HUD or bottom sheet on any
@@ -124,11 +139,17 @@ fun OsmDroidRadarMapView(
     )
   }
 
+  // Permission result becomes user-visible state: denial must never silently
+  // degrade to the India-fallback view without explanation (audit item 11).
+  var showPermissionRationale by remember { mutableStateOf(false) }
+
   val permissionLauncher = rememberLauncherForActivityResult(
     ActivityResultContracts.RequestMultiplePermissions()
   ) { permissions ->
     hasLocationPermission = (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true) ||
       (permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true)
+    // Only nag with the rationale after an explicit denial (not on first ask).
+    showPermissionRationale = !hasLocationPermission
   }
 
   LaunchedEffect(Unit) {
@@ -150,6 +171,22 @@ fun OsmDroidRadarMapView(
 
   LaunchedEffect(selectedSafeZone) {
     if (selectedSafeZone != null) mapState.focusOnSafeZone(selectedSafeZone)
+  }
+
+  // REDEPLOY ZONE OVERLAYS WHEN STATE CHANGES (audit item 4). The factory runs
+  // exactly once, so hazard/safe-zone lists that arrive after first composition
+  // (disaster sync completes, demo mode toggles, live events expire) previously
+  // never reached the map. drawRoute stays guarded separately below.
+  LaunchedEffect(hazardZones) { mapState.deployHazardZones(hazardZones, onHazardZoneTapped) }
+  LaunchedEffect(safeZones) { mapState.deploySafeZones(safeZones, onSafeZoneSelected, onSafeZoneTapped) }
+  LaunchedEffect(
+    disasterEvents, enabledLayers,
+    enabledLayers.contains(DisasterLayer.EARTHQUAKES),
+    enabledLayers.contains(DisasterLayer.ACTIVE_FIRES),
+    enabledLayers.contains(DisasterLayer.OFFICIAL_ALERTS),
+    enabledLayers.contains(DisasterLayer.USER_REPORTS)
+  ) {
+    mapState.deployDisasterEvents(disasterEvents, enabledLayers, onDisasterEventTapped)
   }
 
   // Draws the OSRM evacuation polyline whenever a route is computed, and
@@ -178,7 +215,7 @@ fun OsmDroidRadarMapView(
   Box(modifier = modifier.fillMaxSize()) {
     AndroidView(
       factory = { ctx ->
-        mapState.initMapView(
+        val view = mapState.initMapView(
           context = ctx,
           hazardZones = hazardZones,
           safeZones = safeZones,
@@ -187,12 +224,55 @@ fun OsmDroidRadarMapView(
           onSafeZoneTapped = onSafeZoneTapped,
           onRealGpsFix = onRealGpsFix
         )
+        view
       },
       update = { _ ->
         if (hasLocationPermission) mapState.enableLocationTracking()
       },
       modifier = Modifier.fillMaxSize()
     )
+
+    // GPS-permission rationale (audit item 11): a denial must be explained,
+    // with a real retry action — never a silent India-fallback.
+    if (showPermissionRationale && !hasLocationPermission) {
+      Row(
+        modifier = Modifier
+          .align(Alignment.TopCenter)
+          .padding(top = topOverlayPadding + 8.dp, start = 10.dp, end = 10.dp)
+          .clip(RoundedCornerShape(10.dp))
+          .background(ObsidianContainer.copy(alpha = 0.96f))
+          .border(1.dp, EmergencyRed.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+          .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        Text(
+          text = "Location OFF — risk & routes use a generic India-centre view, not your position.",
+          fontSize = 10.sp,
+          fontWeight = FontWeight.Medium,
+          color = TacticalOnSurface,
+          modifier = Modifier.weight(1f, fill = false)
+        )
+        IconButton(
+          onClick = {
+            permissionLauncher.launch(
+              arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+              )
+            )
+          },
+          modifier = Modifier.size(30.dp)
+        ) {
+          Icon(
+            Icons.Default.MyLocation,
+            contentDescription = "Retry location permission",
+            tint = NeonEmerald,
+            modifier = Modifier.size(18.dp)
+          )
+        }
+      }
+    }
 
     // ---------------- Floating map controls (right edge, one-hand reachable) --
     Column(
@@ -278,9 +358,10 @@ class OsmMapControllerHolder(
   private var currentTravelMode: String = "foot"
   private var currentRoutePolyline: Polyline? = null
 
-  // Large pulsing zone overlays (hazards + safe zones).
+  // Large pulsing zone overlays (hazards + safe zones + disaster events).
   private val hazardZoneOverlays = mutableListOf<PulsingZoneOverlay>()
   private val safeZoneOverlays = mutableListOf<PulsingZoneOverlay>()
+  private val disasterEventOverlays = mutableListOf<PulsingZoneOverlay>()
 
   private var tileSourceIndex = 0
   private val tileSources = listOf(
@@ -348,20 +429,20 @@ class OsmMapControllerHolder(
     view.overlays.add(myLoc)
 
     // 4. Deploy LARGE pulsing hazard zones (danger areas).
-    deployHazardZones(view, hazardZones, onHazardZoneTapped)
+    deployHazardZones(hazardZones, onHazardZoneTapped)
 
     // 5. Deploy LARGE pulsing safe zones (safe areas).
-    deploySafeZones(view, safeZones, onSafeZoneSelected, onSafeZoneTapped)
+    deploySafeZones(safeZones, onSafeZoneSelected, onSafeZoneTapped)
 
     return view
   }
 
-  /** Severity-colored large faded danger circles. */
-  private fun deployHazardZones(
-    view: MapView,
+  /** Severity-colored large faded danger circles (idempotent: stale overlays removed first). */
+  fun deployHazardZones(
     hazardZones: List<HazardZone>,
     onHazardZoneTapped: (HazardZone) -> Unit
   ) {
+    val view = mapView ?: return
     hazardZoneOverlays.forEach { view.overlays.remove(it) }
     hazardZoneOverlays.clear()
 
@@ -381,13 +462,13 @@ class OsmMapControllerHolder(
     view.invalidate()
   }
 
-  /** Green-toned large faded safe-area circles; full shelters get amber/red. */
-  private fun deploySafeZones(
-    view: MapView,
+  /** Green-toned large faded safe-area circles; full shelters get amber/red. Idempotent. */
+  fun deploySafeZones(
     safeZones: List<SafeZone>,
     onSafeZoneSelected: (SafeZone) -> Unit,
     onSafeZoneTapped: (SafeZone) -> Unit
   ) {
+    val view = mapView ?: return
     safeZoneOverlays.forEach { view.overlays.remove(it) }
     safeZoneOverlays.clear()
 
@@ -410,6 +491,84 @@ class OsmMapControllerHolder(
       view.overlays.add(0, overlay)
     }
     view.invalidate()
+  }
+
+  /**
+   * Renders REAL provider events (USGS/FIRMS/IMD/user reports) as compact
+   * circular markers honoring the user's layer toggles. Overview clustering
+   * uses MarkerGeneralizer at national zoom; nothing is invented when a layer
+   * is off or a provider returned nothing. Idempotent — stale markers removed
+   * first, and the location overlay + route polyline are never touched.
+   */
+  fun deployDisasterEvents(
+    events: List<DisasterEvent>,
+    enabledLayers: Set<DisasterLayer>,
+    onEventTapped: (DisasterEvent) -> Unit
+  ) {
+    val view = mapView ?: return
+    disasterEventOverlays.forEach { view.overlays.remove(it) }
+    disasterEventOverlays.clear()
+
+    val zoom = view.zoomLevelDouble
+    val selected = enabledLayers.intersect(
+      setOf(
+        com.example.data.disaster.DisasterLayer.EARTHQUAKES,
+        com.example.data.disaster.DisasterLayer.ACTIVE_FIRES,
+        com.example.data.disaster.DisasterLayer.OFFICIAL_ALERTS,
+        com.example.data.disaster.DisasterLayer.USER_REPORTS
+      )
+    )
+    if (selected.isEmpty()) {
+      view.invalidate()
+      return
+    }
+
+    val renderable = events.mapNotNull { event ->
+      val layer = when (event.disasterType) {
+        DisasterType.EARTHQUAKE -> DisasterLayer.EARTHQUAKES
+        DisasterType.WILDFIRE -> DisasterLayer.ACTIVE_FIRES
+        DisasterType.HEAVY_RAINFALL,
+        DisasterType.CYCLONE,
+        DisasterType.FLOOD,
+        DisasterType.WEATHER_ALERT -> DisasterLayer.OFFICIAL_ALERTS
+        DisasterType.LANDSLIDE,
+        DisasterType.OTHER ->
+          if (event.source == DisasterSource.USER_REPORT) DisasterLayer.USER_REPORTS
+          else DisasterLayer.OFFICIAL_ALERTS
+      }
+      // Zoom-based level-of-detail rule comes from the layer itself.
+      if (layer in selected && layer.isVisibleAt(zoom, enabled = true)) event else null
+    }
+    // Overview clustering — collapses dense fire detections at national zoom.
+    val clustered = MarkerGeneralizer.generalize(renderable, zoom)
+
+    clustered.forEach { event ->
+      val point = when (val g = event.geometry) {
+        is EventGeometry.Point -> GeoPoint(g.lat, g.lon)
+        is EventGeometry.MultiPoint -> g.points.firstOrNull()
+        is EventGeometry.Line -> g.points.firstOrNull()
+        is EventGeometry.Polygon -> g.ring.firstOrNull()
+        is EventGeometry.RasterLayer -> null
+      } ?: return@forEach
+      val overlay = PulsingZoneOverlay(
+        center = OsmGeoPoint(point.lat, point.lon),
+        radiusMeters = DISASTER_MARKER_RADIUS_METERS,
+        baseColorArgb = disasterMarkerColor(event),
+        pulsePeriodMs = DISASTER_PULSE_MS,
+        onZoneTapped = { onEventTapped(event) }
+      )
+      disasterEventOverlays.add(overlay)
+      view.overlays.add(0, overlay)
+    }
+    view.invalidate()
+  }
+
+  /** Honest marker colors: red family for life-safety sources, amber for user reports. */
+  private fun disasterMarkerColor(event: DisasterEvent): Int = when {
+    event.source == DisasterSource.USER_REPORT -> 0xFFF59E0B.toInt()
+    event.severity == HazardSeverity.EXTREME -> 0xFFFF1744.toInt()
+    event.severity == HazardSeverity.HIGH -> 0xFFFF9100.toInt()
+    else -> 0xFFAB47BC.toInt()
   }
 
   private fun hazardColor(zone: HazardZone): Int = when (zone.severity) {
@@ -489,12 +648,17 @@ class OsmMapControllerHolder(
   }
 
   fun cleanup() {
+    hazardZoneOverlays.clear()
+    safeZoneOverlays.clear()
+    disasterEventOverlays.clear()
     mapView?.onDetach()
   }
 
   companion object {
     private const val HAZARD_PULSE_MS = 2600L
     private const val SAFE_ZONE_PULSE_MS = 3600L
+    private const val DISASTER_PULSE_MS = 2200L
     private const val SAFE_ZONE_RADIUS_METERS = 900.0
+    private const val DISASTER_MARKER_RADIUS_METERS = 1200.0
   }
 }

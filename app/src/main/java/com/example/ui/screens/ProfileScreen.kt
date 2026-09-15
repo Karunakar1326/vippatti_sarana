@@ -92,7 +92,11 @@ import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.TacticalOnSurfaceVariant
 import com.example.ui.theme.TacticalOutlineVariant
 import com.example.ui.theme.WarningAmber
+import com.example.data.news.NewsPresentation
 import com.example.viewmodel.VippattiUiState
+
+/** Honest reference point for the tile-cache progress bar (64 MB). */
+private const val OFFLINE_MAP_CACHE_TARGET_BYTES: Long = 64L * 1000L * 1000L
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -1054,20 +1058,37 @@ fun ProfileScreen(
               horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
               Box(modifier = Modifier.size(6.dp).background(NeonEmerald, CircleShape))
-              Text("Ready", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = NeonEmerald)
+              Text(
+                text = if (uiState.is100PercentOfflineCached) "Ready" else "Live mode",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (uiState.is100PercentOfflineCached) NeonEmerald else TacticalOnSurfaceVariant
+              )
             }
           }
 
+          // REAL offline map-cache size — measured from the osmdroid tile
+          // directory on disk. No fabricated "48 MB / 64 MB" numbers: until a
+          // measurement exists the row says so honestly.
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
           ) {
             Text("Offline Relief Map Cache", fontSize = 11.sp, color = TacticalOnSurfaceVariant)
-            Text("48 MB / 64 MB", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
+            Text(
+              text = uiState.tileCacheSizeLabel ?: "Not measured yet",
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              color = TacticalOnSurface
+            )
           }
 
           LinearProgressIndicator(
-            progress = { 0.75f },
+            progress = {
+              uiState.tileCacheBytes?.let { bytes ->
+                (bytes.toFloat() / OFFLINE_MAP_CACHE_TARGET_BYTES).coerceIn(0f, 1f)
+              } ?: 0f
+            },
             modifier = Modifier
               .fillMaxWidth()
               .height(6.dp)
@@ -1085,11 +1106,21 @@ fun ProfileScreen(
           ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
               Icon(Icons.Default.MyLocation, contentDescription = null, tint = TacticalOnSurfaceVariant, modifier = Modifier.size(14.dp))
-              Text("Last Sync: 4m ago", fontSize = 11.sp, color = TacticalOnSurfaceVariant)
+              Text(
+                text = uiState.disasterLastSyncMillis?.let { millis ->
+                  "Disaster sync: " + NewsPresentation.relativeAge(millis, System.currentTimeMillis())
+                } ?: "Disaster sync: not yet run",
+                fontSize = 11.sp,
+                color = TacticalOnSurfaceVariant
+              )
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
               Icon(Icons.Default.Verified, contentDescription = null, tint = NeonEmerald, modifier = Modifier.size(14.dp))
-              Text("Evac Kits Loaded", fontSize = 11.sp, color = NeonEmerald)
+              Text(
+                text = "Data: ${uiState.disasterDataStatusLabel}",
+                fontSize = 11.sp,
+                color = NeonEmerald
+              )
             }
           }
         }

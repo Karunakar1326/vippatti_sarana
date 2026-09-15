@@ -239,10 +239,14 @@ fun DispatchesScreen(
 
             Column {
               Text(
-                text = "OFFLINE CACHED MODE ACTIVE",
+                text = uiState.newsConnectionStateLabel,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
-                color = NeonEmerald,
+                color = if (uiState.newsConnectionStateLabel.startsWith("ONLINE")) {
+                  NeonEmerald
+                } else {
+                  TacticalCyan
+                },
                 letterSpacing = 0.8.sp
               )
               Text(

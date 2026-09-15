@@ -53,11 +53,13 @@ data class GoBagItem(
 )
 
 // SIMULATION default weather readings for the India pilot (Idukki district, Kerala).
+// trend3h defaults to "" because NO live weather feed exists yet — the UI renders
+// "No live trend data" rather than fabricating a worsening/steady claim.
 data class WeatherMetrics(
   val currentTemp: String = "24°C",
   val rainfallIntensity: String = "42mm/h",
   val windGust: String = "65km/h",
-  val trend3h: String = "Worsening",
+  val trend3h: String = "",
   val surgeForecast: String = "Peak reservoir discharge expected in 45 mins"
 )
 
