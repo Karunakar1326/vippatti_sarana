@@ -734,6 +734,7 @@ private fun SafeZoneCard(
 
 // ============================================================================
 // COMPACT WEATHER ROW — temp / rainfall / wind / 3-hr trend in one line
+// (SIMULATED pilot readings — labeled SIM DATA until a live IMD feed lands)
 // ============================================================================
 
 @Composable
@@ -749,6 +750,23 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(10.dp)
   ) {
+    // Honest label: these readings are SIMULATED pilot data, not live IMD values.
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+      Text(
+        text = "SIM",
+        fontSize = 8.sp,
+        fontWeight = FontWeight.Black,
+        color = WarningAmber,
+        letterSpacing = 0.5.sp
+      )
+      Text(
+        text = "DATA",
+        fontSize = 8.sp,
+        fontWeight = FontWeight.Black,
+        color = WarningAmber,
+        letterSpacing = 0.5.sp
+      )
+    }
     WeatherCell(
       icon = Icons.Default.Thermostat,
       label = "TEMP",

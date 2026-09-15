@@ -21,6 +21,33 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // GNews API key — read from app/.env (git-ignored, real key) with the
+    // .env.example placeholder as fallback so clean clones still build; the
+    // app then reports an honest "key not configured" state instead of
+    // fabricating news. Surfaces as BuildConfig.GNEWS_API_KEY — the key is
+    // never hardcoded in Kotlin sources.
+    val gnewsEnvFile = file(".env").takeIf { it.isFile } ?: file(".env.example")
+    val gnewsApiKey = gnewsEnvFile.readLines()
+      .firstOrNull { it.trim().startsWith("GNEWS_API_KEY=") }
+      ?.substringAfter('=')
+      ?.trim()
+      ?.replace("\"", "")
+      ?: "YOUR_GNEWS_API_KEY_HERE"
+    buildConfigField("String", "GNEWS_API_KEY", "\"$gnewsApiKey\"")
+
+    // NASA FIRMS MAP_KEY — free key for the official active-fire API
+    // (https://firms.modaps.eosdis.nasa.gov/api/area/ -> "Get MAP Key").
+    // Same .env convention: real key in app/.env (git-ignored), placeholder
+    // fallback so clean clones build and the app honestly reports the fire
+    // layer as unavailable until the key is configured.
+    val firmsMapKey = gnewsEnvFile.readLines()
+      .firstOrNull { it.trim().startsWith("FIRMS_MAP_KEY=") }
+      ?.substringAfter('=')
+      ?.trim()
+      ?.replace("\"", "")
+      ?: "YOUR_FIRMS_MAP_KEY_HERE"
+    buildConfigField("String", "FIRMS_MAP_KEY", "\"$firmsMapKey\"")
   }
 
   signingConfigs {
@@ -133,6 +160,9 @@ dependencies {
   implementation("com.google.android.material:material:1.12.0")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
+  // Real org.json for plain-JVM unit tests: android.jar ships only stubs
+  // (methods throw "not mocked"), which would make GNews JSON parsing fail.
+  testImplementation("org.json:json:20240303")
   testImplementation(libs.androidx.junit)
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)

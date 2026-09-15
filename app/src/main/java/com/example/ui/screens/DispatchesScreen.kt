@@ -59,7 +59,12 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
+import com.example.data.news.NewsPresentation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -68,7 +73,6 @@ import coil.compose.AsyncImage
 import com.example.data.DispatchIconType
 import com.example.data.DispatchTagType
 import com.example.data.FeedDispatch
-import com.example.data.MockDisasterRepository
 import com.example.ui.theme.EmergencyRed
 import com.example.ui.theme.EmergencyRedBright
 import com.example.ui.theme.EmergencyRedContainer
@@ -102,6 +106,8 @@ fun DispatchesScreen(
   onNavigateTab: (ScreenTab) -> Unit,
   modifier: Modifier = Modifier
 ) {
+  val context = LocalContext.current
+
   val syncRotation by animateFloatAsState(
     targetValue = if (uiState.isSyncing) 360f else 0f,
     animationSpec = tween(durationMillis = 800),
@@ -245,6 +251,11 @@ fun DispatchesScreen(
                 color = TacticalOnSurfaceVariant,
                 maxLines = 1
               )
+              Text(
+                text = "GNews free plan: articles appear up to 12h after publication • not official alerts",
+                fontSize = 10.sp,
+                color = TacticalOnSurfaceVariant
+              )
             }
           }
 
@@ -341,7 +352,7 @@ fun DispatchesScreen(
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-              text = if (uiState.isAudioPlaying) "Playing..." else "Listen",
+              text = if (uiState.isAudioPlaying) "Playing ${uiState.audioPlaybackSeconds}s" else "Listen",
               fontSize = 12.sp,
               fontWeight = FontWeight.Bold
             )
@@ -395,203 +406,302 @@ fun DispatchesScreen(
       }
     }
 
-    // 5. Breaking Alert Hero Card
+    // 5. Severe-Alert Hero Card — the top REAL GNews article (never fabricated)
     item {
-      val alert = MockDisasterRepository.breakingAlert
-      Box(
-        modifier = Modifier
-          .fillMaxWidth()
-          .padding(horizontal = 14.dp, vertical = 6.dp)
-      ) {
-        Column(
+      val hero = uiState.newsHero
+      val now = System.currentTimeMillis()
+      if (hero != null) {
+        Box(
           modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(ObsidianContainerLow)
-            .border(2.dp, EmergencyRed.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 6.dp)
         ) {
-          // Banner Image with Overlays
-          // Width-proportional hero height (≈0.53 of card width — the original
-          // 176dp on a 360dp phone) so it scales down on small phones and
-          // grows sensibly on large ones, instead of a fixed 176dp.
-          Box(
+          Column(
             modifier = Modifier
               .fillMaxWidth()
-              .aspectRatio(1f / 0.53f)
-              .background(ObsidianContainerHighest)
+              .clip(RoundedCornerShape(16.dp))
+              .background(ObsidianContainerLow)
+              .border(2.dp, EmergencyRed.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
           ) {
-            AsyncImage(
-              model = alert.imageUrl,
-              contentDescription = "Flash flood emergency banner",
-              contentScale = ContentScale.Crop,
-              modifier = Modifier.fillMaxSize()
-            )
-
-            // Bottom gradient scrim
+            // Banner Image with Overlays
+            // Width-proportional hero height (≈0.53 of card width — the original
+            // 176dp on a 360dp phone) so it scales down on small phones and
+            // grows sensibly on large ones, instead of a fixed 176dp.
             Box(
-              modifier = Modifier
-                .fillMaxSize()
-                .background(
-                  Brush.verticalGradient(
-                    colors = listOf(
-                      Color.Transparent,
-                      ObsidianContainerLow.copy(alpha = 0.5f),
-                      ObsidianContainerLow
-                    )
-                  )
-                )
-            )
-
-            // Critical badge
-            Row(
-              modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(12.dp)
-                .clip(CircleShape)
-                .background(EmergencyRedContainer.copy(alpha = 0.9f))
-                .border(1.dp, EmergencyRed.copy(alpha = 0.4f), CircleShape)
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-              Icon(
-                imageVector = Icons.Default.Warning,
-                contentDescription = null,
-                tint = EmergencyRedBright,
-                modifier = Modifier.size(14.dp)
-              )
-              Text(
-                text = alert.agency,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color = OnEmergencyRedContainer,
-                letterSpacing = 0.6.sp
-              )
-            }
-
-            // Timestamp tag
-            Box(
-              modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(12.dp)
-                .clip(CircleShape)
-                .background(ObsidianContainerLowest.copy(alpha = 0.8f))
-                .padding(horizontal = 8.dp, vertical = 3.dp)
-            ) {
-              Text(
-                text = alert.timeAgo,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Medium,
-                color = TacticalOnSurfaceVariant
-              )
-            }
-          }
-
-          // Alert Text Content
-          Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-          ) {
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-              Box(
-                modifier = Modifier
-                  .clip(RoundedCornerShape(4.dp))
-                  .background(EmergencyRed)
-                  .padding(horizontal = 6.dp, vertical = 2.dp)
-              ) {
-                Text(
-                  text = alert.level.uppercase(),
-                  fontSize = 10.sp,
-                  fontWeight = FontWeight.Bold,
-                  color = Color.White
-                )
-              }
-              Text(
-                text = alert.zone,
-                fontSize = 12.sp,
-                color = TacticalOnSurfaceVariant
-              )
-            }
-
-            Text(
-              text = alert.title,
-              fontSize = 18.sp,
-              fontWeight = FontWeight.Bold,
-              color = TacticalOnSurface,
-              lineHeight = 22.sp
-            )
-
-            Text(
-              text = alert.description,
-              fontSize = 13.sp,
-              color = TacticalOnSurfaceVariant,
-              lineHeight = 18.sp
-            )
-
-            // Action row
-            Row(
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 4.dp)
-                .border(
-                  width = 1.dp,
-                  color = TacticalOutlineVariant.copy(alpha = 0.3f),
-                  shape = RoundedCornerShape(0.dp)
+                .aspectRatio(1f / 0.53f)
+                .background(ObsidianContainerHighest)
+            ) {
+              if (hero.imageUrl != null) {
+                AsyncImage(
+                  model = hero.imageUrl,
+                  contentDescription = "Disaster news article image",
+                  contentScale = ContentScale.Crop,
+                  modifier = Modifier.fillMaxSize()
                 )
-                .padding(top = 10.dp),
-              horizontalArrangement = Arrangement.SpaceBetween,
-              verticalAlignment = Alignment.CenterVertically
+              } else {
+                // Honest placeholder: the article has no image — never fake one.
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                  Icon(
+                    imageVector = Icons.Default.Campaign,
+                    contentDescription = null,
+                    tint = TacticalCyan,
+                    modifier = Modifier.size(42.dp)
+                  )
+                }
+              }
+
+              // Bottom gradient scrim
+              Box(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .background(
+                    Brush.verticalGradient(
+                      colors = listOf(
+                        Color.Transparent,
+                        ObsidianContainerLow.copy(alpha = 0.5f),
+                        ObsidianContainerLow
+                      )
+                    )
+                  )
+              )
+
+              // Honest source badge — a news article is NOT an official alert.
+              Row(
+                modifier = Modifier
+                  .align(Alignment.TopStart)
+                  .padding(12.dp)
+                  .clip(CircleShape)
+                  .background(EmergencyRedContainer.copy(alpha = 0.9f))
+                  .border(1.dp, EmergencyRed.copy(alpha = 0.4f), CircleShape)
+                  .padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Default.Warning,
+                  contentDescription = null,
+                  tint = EmergencyRedBright,
+                  modifier = Modifier.size(14.dp)
+                )
+                Text(
+                  text = NewsPresentation.HERO_BADGE,
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = OnEmergencyRedContainer,
+                  letterSpacing = 0.6.sp
+                )
+              }
+
+              // Real publication age
+              Box(
+                modifier = Modifier
+                  .align(Alignment.TopEnd)
+                  .padding(12.dp)
+                  .clip(CircleShape)
+                  .background(ObsidianContainerLowest.copy(alpha = 0.8f))
+                  .padding(horizontal = 8.dp, vertical = 3.dp)
+              ) {
+                Text(
+                  text = NewsPresentation.relativeAge(hero.publishedAtMillis, now),
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Medium,
+                  color = TacticalOnSurfaceVariant
+                )
+              }
+            }
+
+            // Article Text Content
+            Column(
+              modifier = Modifier.padding(16.dp),
+              verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
               Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                // Flex so long verifier labels ellipsize instead of pushing
-                // the evacuation button off screen.
-                modifier = Modifier.weight(1f)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
               ) {
-                Icon(
-                  imageVector = Icons.Default.CheckCircle,
-                  contentDescription = null,
-                  tint = NeonEmerald,
-                  modifier = Modifier.size(16.dp)
-                )
+                Box(
+                  modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(EmergencyRed)
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                  Text(
+                    text = hero.category.displayTag.uppercase(),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                  )
+                }
                 Text(
-                  text = alert.verifiedBadge,
+                  text = "${hero.scope.label} • ${hero.sourceName}",
                   fontSize = 12.sp,
-                  fontWeight = FontWeight.SemiBold,
-                  color = NeonEmerald,
-                  maxLines = 1,
-                  overflow = TextOverflow.Ellipsis
+                  color = TacticalOnSurfaceVariant
                 )
               }
 
+              Text(
+                text = hero.title,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                color = TacticalOnSurface,
+                lineHeight = 22.sp
+              )
+
+              Text(
+                text = NewsPresentation.articleSummary(hero),
+                fontSize = 13.sp,
+                color = TacticalOnSurfaceVariant,
+                lineHeight = 18.sp
+              )
+
+              // Action row — real publisher attribution (no fake verification badge)
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(top = 4.dp)
+                  .border(
+                    width = 1.dp,
+                    color = TacticalOutlineVariant.copy(alpha = 0.3f),
+                    shape = RoundedCornerShape(0.dp)
+                  )
+                  .padding(top = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(4.dp),
+                  // Flex so long publisher names ellipsize instead of pushing
+                  // the evacuation button off screen.
+                  modifier = Modifier.weight(1f)
+                ) {
+                  Icon(
+                    imageVector = Icons.Default.Campaign,
+                    contentDescription = null,
+                    tint = NeonEmerald,
+                    modifier = Modifier.size(16.dp)
+                  )
+                  Text(
+                    text = "Reported by ${hero.sourceName}",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = NeonEmerald,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                  )
+                }
+
+                Button(
+                  onClick = onNavigateToEvacRoute,
+                  colors = ButtonDefaults.buttonColors(
+                    containerColor = NeonEmeraldContainer,
+                    contentColor = OnNeonEmeraldContainer
+                  ),
+                  shape = RoundedCornerShape(8.dp),
+                  contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                  modifier = Modifier
+                    .height(34.dp)
+                    .testTag("evacuation_routes_hero_button")
+                ) {
+                  Text(
+                    text = "Evacuation Routes",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                  )
+                  Spacer(modifier = Modifier.width(4.dp))
+                  Icon(
+                    imageVector = Icons.Default.NearMe,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                  )
+                }
+              }
+
+              // Open the real publisher story in the browser
               Button(
-                onClick = onNavigateToEvacRoute,
+                onClick = {
+                  context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(hero.url)))
+                },
                 colors = ButtonDefaults.buttonColors(
-                  containerColor = NeonEmeraldContainer,
-                  contentColor = OnNeonEmeraldContainer
+                  containerColor = ObsidianBright,
+                  contentColor = NeonEmerald
                 ),
                 shape = RoundedCornerShape(8.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 modifier = Modifier
+                  .fillMaxWidth()
                   .height(34.dp)
-                  .testTag("evacuation_routes_hero_button")
+                  .testTag("hero_read_full_story_button")
               ) {
-                Text(
-                  text = "Evacuation Routes",
-                  fontSize = 12.sp,
-                  fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.width(4.dp))
                 Icon(
-                  imageVector = Icons.Default.NearMe,
+                  imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                   contentDescription = null,
                   modifier = Modifier.size(16.dp)
                 )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                  text = "Read Full Story at ${hero.sourceName}",
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.Bold,
+                  maxLines = 1
+                )
               }
+            }
+          }
+        }
+      } else {
+        // Honest empty / loading / error hero — never a fabricated alert
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 6.dp)
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(16.dp))
+              .background(ObsidianContainerLow)
+              .border(2.dp, TacticalOutlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+              .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+          ) {
+            Icon(
+              imageVector = Icons.Default.Campaign,
+              contentDescription = null,
+              tint = TacticalCyan,
+              modifier = Modifier.size(36.dp)
+            )
+            Text(
+              text = when {
+                uiState.isSyncing -> "Fetching live disaster news from GNews…"
+                uiState.newsError != null -> uiState.newsError.userMessage
+                else -> "No severe disaster news loaded yet — tap Sync to pull live articles from GNews (Idukki → Kerala → India)"
+              },
+              fontSize = 13.sp,
+              color = TacticalOnSurfaceVariant,
+              lineHeight = 18.sp,
+              textAlign = TextAlign.Center
+            )
+            Button(
+              onClick = onSync,
+              enabled = !uiState.isSyncing,
+              colors = ButtonDefaults.buttonColors(
+                containerColor = NeonEmeraldContainer,
+                contentColor = OnNeonEmeraldContainer
+              ),
+              shape = RoundedCornerShape(8.dp),
+              modifier = Modifier
+                .height(34.dp)
+                .testTag("hero_sync_now_button")
+            ) {
+              Text(
+                text = if (uiState.isSyncing) "Syncing…" else "Sync Now",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+              )
             }
           }
         }
@@ -625,23 +735,56 @@ fun DispatchesScreen(
           )
         }
         Text(
-          text = "Auto-refresh: 2m",
+          text = if (uiState.isSyncing) "Syncing…" else "LIVE VIA GNEWS",
           fontSize = 11.sp,
           color = TacticalOnSurfaceVariant
         )
       }
     }
 
-    // 7. Feed Cards
-    val filteredDispatches = if (uiState.selectedNewsCategory == "All") {
-      MockDisasterRepository.feedDispatches
+    // 7. Feed Cards — REAL GNews articles mapped to dispatch cards
+    val visibleArticles = if (uiState.selectedNewsCategory == "All") {
+      uiState.newsArticles
     } else {
-      MockDisasterRepository.feedDispatches.filter {
-        when (uiState.selectedNewsCategory) {
-          "Severe Alerts" -> it.tagType == DispatchTagType.HIGH_ALERT || it.tagType == DispatchTagType.ROAD_CLOSED
-          "Shelter Updates" -> it.tagType == DispatchTagType.SHELTER_READY || it.tagType == DispatchTagType.CAPACITY_INFO
-          "Weather Radar" -> it.iconType == DispatchIconType.RAIN
-          else -> true
+      uiState.newsArticles.filter { article ->
+        NewsPresentation.matchesCategory(article.category, uiState.selectedNewsCategory)
+      }
+    }
+    val filteredDispatches = NewsPresentation.toFeedDispatches(visibleArticles, System.currentTimeMillis())
+
+    if (filteredDispatches.isEmpty()) {
+      item {
+        // Honest empty state — no fabricated filler dispatches
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+        ) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(14.dp))
+              .background(ObsidianContainer)
+              .border(1.dp, TacticalOutlineVariant.copy(alpha = 0.3f), RoundedCornerShape(14.dp))
+              .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+          ) {
+            Text(
+              text = when {
+                uiState.isSyncing -> "Fetching live disaster news…"
+                uiState.selectedNewsCategory != "All" ->
+                  "No articles match \"${uiState.selectedNewsCategory}\" right now — switch to All or tap Sync."
+                uiState.newsError != null -> uiState.newsError.userMessage
+                uiState.newsEverLoaded -> "Live feed returned no new articles — try again later."
+                else -> "No disaster news loaded yet — tap Sync to fetch live GNews articles."
+              },
+              fontSize = 13.sp,
+              color = TacticalOnSurfaceVariant,
+              lineHeight = 18.sp,
+              textAlign = TextAlign.Center
+            )
+          }
         }
       }
     }
@@ -650,11 +793,9 @@ fun DispatchesScreen(
       FeedDispatchCard(
         dispatch = dispatch,
         onActionClick = {
-          when (dispatch.actionLabel) {
-            "Get Directions", "Detour Map" -> onNavigateTab(ScreenTab.RADAR_MAP)
-            "Check Availability" -> onNavigateTab(ScreenTab.RADAR_MAP)
-            else -> onNavigateTab(ScreenTab.INSTRUCTIONS)
-          }
+          dispatch.url?.let { url ->
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+          } ?: onNavigateTab(ScreenTab.INSTRUCTIONS)
         }
       )
     }

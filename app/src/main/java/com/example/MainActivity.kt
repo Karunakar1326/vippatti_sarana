@@ -1,4 +1,4 @@
-﻿package com.example
+package com.example
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -9,6 +9,8 @@ import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -27,11 +29,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.news.NewsFileCache
 import com.example.ui.components.AddContactDialog
 import com.example.ui.components.EditProfileDialog
 import com.example.ui.components.SituationReportDialog
@@ -53,13 +60,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
     setContent {
-      val viewModel: VippattiViewModel = viewModel()
+      // Production ViewModel: file-backed GNews cache survives app restarts.
+      val viewModel: VippattiViewModel = viewModel(
+        factory = object : ViewModelProvider.Factory {
+          @Suppress("UNCHECKED_CAST")
+          override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            VippattiViewModel(
+              newsCache = NewsFileCache(File(cacheDir, "news_cache"))
+            ) as T
+        }
+      )
       val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
       VippattiTheme(darkTheme = uiState.isDarkTheme) {
@@ -148,6 +165,41 @@ fun VippattiAppRoot(
     uiState.snackbarMessage?.let { message ->
       snackbarHostState.showSnackbar(message)
       viewModel.clearSnackbar()
+    }
+  }
+
+  // REAL TextToSpeech engine — speaks the bulletin the ViewModel composed from
+  // real state (risk level, recommended action, live GNews headlines). The old
+  // fake playback timer is gone: the engine itself reports completion.
+  var ttsStatus by remember { mutableStateOf<Int?>(null) }
+  val ttsEngine = remember { TextToSpeech(context) { status -> ttsStatus = status } }
+  DisposableEffect(Unit) {
+    onDispose {
+      ttsEngine.stop()
+      ttsEngine.shutdown()
+    }
+  }
+  LaunchedEffect(uiState.isAudioPlaying, uiState.audioBulletinText, ttsStatus) {
+    if (!uiState.isAudioPlaying) {
+      ttsEngine.stop()
+      return@LaunchedEffect
+    }
+    val bulletin = uiState.audioBulletinText
+    if (bulletin.isBlank()) return@LaunchedEffect
+    when (ttsStatus) {
+      TextToSpeech.SUCCESS -> {
+        ttsEngine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+          override fun onStart(utteranceId: String?) { }
+          override fun onDone(utteranceId: String?) { viewModel.onTtsBulletinFinished() }
+          override fun onError(utteranceId: String?) { viewModel.onTtsUnavailable() }
+          override fun onError(utteranceId: String?, errorCode: Int) { viewModel.onTtsUnavailable() }
+        })
+        if (ttsEngine.speak(bulletin, TextToSpeech.QUEUE_FLUSH, null, "sarana_bulletin") == TextToSpeech.ERROR) {
+          viewModel.onTtsUnavailable()
+        }
+      }
+      null -> Unit // Engine still initializing — this effect re-runs when ttsStatus arrives.
+      else -> viewModel.onTtsUnavailable()
     }
   }
 

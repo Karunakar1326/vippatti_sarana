@@ -1,16 +1,10 @@
 package com.example.data
 
-data class BreakingAlert(
-  val title: String,
-  val level: String,
-  val zone: String,
-  val description: String,
-  val timeAgo: String,
-  val agency: String,
-  val verifiedBadge: String,
-  val imageUrl: String
-)
-
+/**
+ * One feed card in the Disaster & Weather Intelligence tab. Instances are
+ * mapped from REAL GNews articles (see data/news/NewsPresentation.kt) — no
+ * fabricated dispatch entries exist in this codebase.
+ */
 data class FeedDispatch(
   val id: String,
   val agency: String,
@@ -21,7 +15,9 @@ data class FeedDispatch(
   val description: String,
   val location: String,
   val actionLabel: String,
-  val iconType: DispatchIconType
+  val iconType: DispatchIconType,
+  /** Real publisher URL — "Read Full Story" opens it in the browser. */
+  val url: String? = null
 )
 
 enum class DispatchTagType {
@@ -66,78 +62,12 @@ data class WeatherMetrics(
 )
 
 /**
- * SIMULATION dataset for the India pilot — Idukki district, Kerala.
- * All alerts, dispatches, evacuation centers and contacts below are static MOCK data
- * for the India pilot and do not represent real operational feeds.
+ * Static India-pilot profile data (go-bag checklist + seed kin contacts).
+ * Disaster intelligence (alerts / breaking alerts / dispatch feed) now flows
+ * ONLY from the real GNews pipeline in data/news — nothing here fabricates
+ * alerts, news or dispatches anymore.
  */
 object MockDisasterRepository {
-
-  val breakingAlert = BreakingAlert(
-    title = "Heavy Rainfall / Flash Flood Warning Level Red",
-    level = "Level Red",
-    zone = "Idukki District Highlands & Periyar Valley Zones",
-    description = "Kerala State Disaster Management Authority issues emergency evacuation orders for low-lying settlements within 2km of the Periyar river. Reservoir discharge and flash flood peaks expected between 14:00 and 18:00.",
-    timeAgo = "15m ago",
-    agency = "CRITICAL URGENT • KSDMA",
-    verifiedBadge = "Verified KSDMA Dispatch",
-    imageUrl = "https://lh3.googleusercontent.com/aida-public/AB6AXuDJ8gt2TC26Btj6mgoPr7UkVwnVNY1_8QudZB20oynhUxEpMip7T-jRW_jdncpPf2W_Uxv7rbR2pPrSsQSsERTuy1yN0Vsbr1WXjVtxnWgXRImneCvYxfENTNaKmBoMIzLclWSdAbXUafZQmd_v72teBnrFcrd3o8VYbocfddZ1DKrj-BvbFdMmcFhUstFL62sThynAGGXmXbSvbaHTtvwOG8YWa0XErixCJV91I3BW-t-SEqLTGcouKA"
-  )
-
-  val mapSatelliteImageUrl = "https://lh3.googleusercontent.com/aida-public/AB6AXuC6oGIEPHApoL_XjanXVtyvBu-0ZXubn1pb7XErXRwvf2Ukw8DzaT8fCxiftbtEiZwB2XYk1Ll91P5uNNClrOwQdzTaCmgw6BpxNnRGgty0dCG9epmKlLqYTpkZXWSC42ZVGhiqZWBR8DmIvVsw-Mcph684_twJn1azJhS534Upn0TqjyMvAKZuM0nOt7qcmleeFl_MgzDMZJ-iuEOPl5tQDwZqA2S3okRiQgxSuJ-cnT4nF5MRkI4POA"
-
-  val feedDispatches = listOf(
-    FeedDispatch(
-      id = "disp-1",
-      agency = "METEOROLOGICAL DEPT",
-      issuedTime = "Issued 28 mins ago",
-      tag = "High Alert",
-      tagType = DispatchTagType.HIGH_ALERT,
-      title = "Heavy rainfall warning extended for highland and valley sectors for 24 hours",
-      description = "Precipitation exceeding 220mm forecast with flash flood propensity across Periyar and Cheruthoni river catchment territories.",
-      location = "Idukki Highlands A & B, Periyar Valley",
-      actionLabel = "Read Advisory",
-      iconType = DispatchIconType.RAIN
-    ),
-    FeedDispatch(
-      id = "disp-2",
-      agency = "RED CROSS RELIEF OPS",
-      issuedTime = "Issued 42 mins ago",
-      tag = "Shelter Ready",
-      tagType = DispatchTagType.SHELTER_READY,
-      title = "Shelter Camp #4 at Cheruthoni opened with medical triage and clean water supply",
-      description = "Accepting evacuees immediately. Equipped with 450 bed units, pediatrician staff, sanitary kits, and solar charging docks.",
-      location = "Cheruthoni Community Relief Hall, Ward 4",
-      actionLabel = "Get Directions",
-      iconType = DispatchIconType.SHELTER
-    ),
-    FeedDispatch(
-      id = "disp-3",
-      agency = "HIGHWAY PATROL & IRRIGATION",
-      issuedTime = "Issued 1 hour ago",
-      tag = "Road Closed",
-      tagType = DispatchTagType.ROAD_CLOSED,
-      title = "Periyar water levels crossed Danger Mark at Cheruthoni Bridge — Hill Highway Closed",
-      description = "Water gauge reads +1.4m over emergency threshold. Highway barrier deployed. Commuters diverted via Kattappana Bypass.",
-      location = "Cheruthoni Bridge / Hill Highway Crossing",
-      actionLabel = "Detour Map",
-      iconType = DispatchIconType.FLOOD
-    ),
-    FeedDispatch(
-      id = "disp-4",
-      agency = "CIVIL DEFENSE LOGISTICS",
-      issuedTime = "Issued 2 hours ago",
-      tag = "Capacity Info",
-      tagType = DispatchTagType.CAPACITY_INFO,
-      title = "Carrying Capacity status: 6 new safe relocation hubs operational in Kattappana block",
-      description = "Total secondary surge capacity expanded to 2,800 persons with emergency sanitation blocks, food rations, and backup satellite comms.",
-      location = "Kattappana Block Civic Complexes",
-      actionLabel = "Check Availability",
-      iconType = DispatchIconType.LOGISTICS
-    )
-  )
-
-  val evacuationCentersNote: String
-    get() = "Superseded by PilotRegionData.safeZones (structured shelter model)"
 
   val defaultGoBagItems = listOf(
     GoBagItem("item-1", "Go-Bag", "Waterproof 15L", true, "backpack"),

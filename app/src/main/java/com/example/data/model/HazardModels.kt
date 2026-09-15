@@ -12,8 +12,12 @@ enum class HazardType(val label: String) {
   LANDSLIDE("Landslide"),
   FIRE("Fire"),
   HEAVY_RAINFALL("Heavy Rainfall"),
+  EARTHQUAKE("Earthquake"),
+  CYCLONE("Cyclone"),
+  WEATHER_ALERT("Weather Alert"),
   OTHER("Other Disaster")
 }
+
 
 /** Standard 4-step severity scale, visually distinguishable on the map. */
 enum class HazardSeverity(val label: String) {

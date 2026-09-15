@@ -13,7 +13,17 @@ import com.example.data.reports.EmergencyReportService
 import com.example.data.reports.NdrfEmergencyReportService
 import com.example.data.reports.ReportKind
 import com.example.data.reports.ReportReceipt
+import com.example.BuildConfig
+import com.example.data.news.GNewsServiceImpl
+import com.example.data.news.MemoryNewsCache
+import com.example.data.news.NewsArticle
+import com.example.data.news.NewsCache
+import com.example.data.news.NewsError
+import com.example.data.news.NewsFeed
+import com.example.data.news.NewsRepository
+import com.example.data.news.NewsTtsBulletin
 import com.example.data.model.GeoMath
+import com.example.data.model.HazardSeverity
 import com.example.data.model.HazardZone
 import com.example.data.model.SafeZone
 import com.example.data.routing.GeoPoint
@@ -27,6 +37,23 @@ import com.example.data.risk.RelocationPlanner
 import com.example.data.risk.RiskAssessmentEngine
 import com.example.data.shelters.SafeZoneEvaluation
 import com.example.data.shelters.SafeZoneEvaluator
+import com.example.data.disaster.DisasterCache
+import com.example.data.disaster.DisasterDataRepository
+import com.example.data.disaster.DisasterEvent
+import com.example.data.disaster.DisasterLayer
+import com.example.data.disaster.DisasterSource
+import com.example.data.disaster.FirmsFireProvider
+import com.example.data.disaster.ImdCapProvider
+import com.example.data.disaster.IncidentCategory
+import com.example.data.disaster.IncidentReport
+import com.example.data.disaster.IndiaGeo
+import com.example.data.disaster.MemoryDisasterCache
+import com.example.data.disaster.ProviderState
+import com.example.data.disaster.UsgsEarthquakeProvider
+import com.example.data.disaster.defaultSeverity
+import com.example.data.disaster.dedupeBySourceEventId
+import com.example.data.disaster.toHazardZones
+import com.example.data.disaster.isValid
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +73,9 @@ import java.util.Locale
  */
 private const val REROUTE_MIN_MOVEMENT_METERS = 50.0
 
+/** Cap on locally-held citizen reports (device memory guard). */
+private const val MAX_INCIDENT_REPORTS = 50
+
 enum class ScreenTab {
   RADAR_MAP,
   NEWS_DISPATCHES,
@@ -64,11 +94,20 @@ data class VippattiUiState(
   val currentTab: ScreenTab = ScreenTab.RADAR_MAP,
   val isDarkTheme: Boolean = true,
   val is100PercentOfflineCached: Boolean = true,
-  val lastSyncTime: String = "Today at 08:42 AM • Emergency SMS live",
+  val lastSyncTime: String = "Not synced yet — tap Sync to fetch live GNews disaster news",
   val isSyncing: Boolean = false,
   val isAudioPlaying: Boolean = false,
   val audioPlaybackSeconds: Int = 0,
   val selectedNewsCategory: String = "All",
+  // --- REAL GNews disaster-news pipeline (articles are never fabricated) ---
+  val newsArticles: List<NewsArticle> = emptyList(),
+  val newsHero: NewsArticle? = null,
+  val isNewsFromCache: Boolean = false,
+  val newsLastFetchedAtMillis: Long? = null,
+  val newsEverLoaded: Boolean = false,
+  val newsError: NewsError? = null,
+  /** Spoken-bulletin text — composed from real state, consumed by real TTS. */
+  val audioBulletinText: String = "",
   val goBagItems: List<GoBagItem> = MockDisasterRepository.defaultGoBagItems,
   val userIsSafe: Boolean = true,
   val isSosActive: Boolean = false,
@@ -91,13 +130,45 @@ data class VippattiUiState(
   val weather: WeatherMetrics = WeatherMetrics(),
   val snackbarMessage: String? = null,
 
-  // --- Location (REAL GPS preferred; labeled India fallback otherwise) ---
-  val userLocation: GeoPoint = PilotRegionData.FALLBACK_USER_LOCATION,
-  /** true -> location is the static India fallback; false -> REAL GPS fix. */
+  // --- Location (REAL GPS preferred; India-centre view until a fix arrives) ---
+  val userLocation: GeoPoint = GeoPoint(
+    com.example.data.disaster.IndiaGeo.CENTER_LAT,
+    com.example.data.disaster.IndiaGeo.CENTER_LON
+  ),
+  /**
+   * true -> NO GPS fix yet; the user location is just the India map centre
+   * (NEVER a district-level fallback). false -> real device GPS fix.
+   */
   val isUserLocationFallback: Boolean = true,
 
+  // --- REAL India-wide disaster pipeline (USGS + FIRMS + IMD CAP) ---
+  /** Live, provider-sourced events (normalized, validated, deduped). */
+  val disasterEvents: List<DisasterEvent> = emptyList(),
+  /** Per-source freshness/status (Live / Recent / Cached / Unavailable). */
+  val providerStates: List<ProviderState> = emptyList(),
+  /** True while a disaster-data sync is in flight. */
+  val isDisasterSyncing: Boolean = false,
+  /** Aggregated label: LIVE when any provider is live, else cached/unavailable. */
+  val isDisasterDataLive: Boolean = false,
+  /** Latest sync time across providers (for "Last updated" display). */
+  val disasterLastSyncMillis: Long? = null,
+  /** Map layer toggles (user-controlled; zoom rules applied at render time). */
+  val enabledLayers: Set<DisasterLayer> = setOf(
+    DisasterLayer.OFFICIAL_ALERTS, DisasterLayer.EARTHQUAKES,
+    DisasterLayer.USER_REPORTS, DisasterLayer.SAFE_ZONES,
+    DisasterLayer.EVACUATION_ROUTE, DisasterLayer.MY_LOCATION
+  ),
+  /** Explicit DEMO MODE — clearly-labeled pilot/simulated data. Off by default. */
+  val isDemoMode: Boolean = false,
+  /** Citizen-submitted incident reports (unverified, TTL'd). */
+  val userIncidentReports: List<IncidentReport> = emptyList(),
+  /** Selected disaster event for the tap detail panel. */
+  val disasterEventDetail: DisasterEvent? = null,
+  /** Dialog for the "Add a Report" incident flow. */
+  val showIncidentReportDialog: Boolean = false,
+
   // --- Intelligence results (recomputed on every location change) ---
-  val hazardZones: List<HazardZone> = PilotRegionData.hazardZones,
+  val hazardZones: List<HazardZone> = emptyList(),
   val safeZones: List<SafeZone> = PilotRegionData.safeZones,
   val personalRisk: PersonalRiskAssessment? = null,
   val recommendedAction: RecommendedAction? = null,
@@ -126,13 +197,13 @@ data class VippattiUiState(
       "$percent%" + if (isBatteryCharging) " (Charging)" else " (Discharging)"
     } ?: "Reading device battery..."
 
-  /** Real coordinates (GPS fix or pilot fallback) shown in the SOS dialogs. */
+  /** Real coordinates (GPS fix or India-centre view) shown in the SOS dialogs. */
   val sosLocationLabel: String
     get() = String.format(
       "%.4f N, %.4f E (%s)",
       userLocation.lat,
       userLocation.lon,
-      if (isUserLocationFallback) "FALLBACK" else "LIVE GPS"
+      if (isUserLocationFallback) "NO GPS FIX" else "LIVE GPS"
     )
 
   /** Relay targets for a distress broadcast: NDRF 112 + kin contact count. */
@@ -142,8 +213,40 @@ data class VippattiUiState(
 
 class VippattiViewModel(
   /** Emergency report gateway — NDRF pilot simulation by default, swappable. */
-  private val reportService: EmergencyReportService = NdrfEmergencyReportService()
+  private val reportService: EmergencyReportService = NdrfEmergencyReportService(),
+  /**
+   * Real GNews disaster-news cache — file-backed in production (MainActivity
+   * injects NewsFileCache so cached articles survive process restarts),
+   * in-memory by default (unit tests).
+   */
+  newsCache: NewsCache = MemoryNewsCache(),
+  /**
+   * REAL disaster-data cache — file-backed in production (MainActivity
+   * injects DisasterFileCache so provider shards survive process restarts),
+   * in-memory by default (unit tests).
+   */
+  disasterCache: DisasterCache = MemoryDisasterCache(),
+  /**
+   * REAL India-wide disaster data repository. Default: live USGS (keyless),
+   * NASA FIRMS (free MAP_KEY via app/.env) and IMD official CAP alerts
+   * (keyless). Tests inject a repository with fake providers.
+   */
+  private val disasterRepository: DisasterDataRepository = DisasterDataRepository(
+    providers = listOf(
+      UsgsEarthquakeProvider(),
+      ImdCapProvider(),
+      FirmsFireProvider(mapKeyProvider = { BuildConfig.FIRMS_MAP_KEY })
+    ),
+    cache = disasterCache
+  )
 ) : ViewModel() {
+
+  /** Real GNews disaster-news pipeline (live API + offline cache). */
+  private val newsRepository: NewsRepository = NewsRepository(
+    service = GNewsServiceImpl(),
+    cache = newsCache,
+    apiKeyProvider = { BuildConfig.GNEWS_API_KEY }
+  )
 
   private val _uiState = MutableStateFlow(VippattiUiState())
   val uiState: StateFlow<VippattiUiState> = _uiState.asStateFlow()
@@ -151,37 +254,79 @@ class VippattiViewModel(
   private var audioJob: Job? = null
   private var sirenJob: Job? = null
   private var routingJob: Job? = null
+  private var newsJob: Job? = null
+  private var disasterJob: Job? = null
 
   /** Location the current/last route was computed from — guards GPS re-routing. */
   private var lastRouteOrigin: GeoPoint? = null
 
   init {
-    // Run the full intelligence pipeline once on the fallback location so the
-    // map opens with risk, ranked shelters and a recommendation immediately.
-    recomputeIntelligence(selectInitialShelter = true)
+    // Cold start: run the intelligence pipeline once on the India-centre view
+    // so risk is assessed (GREEN without GPS — no fake hazards), then pull
+    // the REAL India-wide disaster feeds (cache-first when offline).
+    recomputeIntelligence(selectInitialShelter = false)
+    disasterJob = viewModelScope.launch {
+      val cached = disasterRepository.loadCachedOnly()
+      if (cached != null) {
+        applyDisasterFeed(cached)
+      } else {
+        applyDisasterFeed(disasterRepository.refresh())
+      }
+    }
+    // Cold start of the REAL GNews pipeline: a fresh cache (< 30 min) serves
+    // instantly (offline survival + quota protection); otherwise it fetches.
+    newsJob = viewModelScope.launch { applyNewsFeed(newsRepository.ensureLoaded()) }
   }
 
   // ============================================================ INTELLIGENCE
 
   /**
    * The heart of the decision pipeline:
-   * GPS/fallback location -> hazard analysis -> safe-zone discovery ->
+   * GPS/India-centre location -> hazard analysis (REAL live events + user
+   * reports + explicitly-labeled demo data) -> safe-zone discovery ->
    * capacity check -> ranked options -> personal risk -> recommended action ->
    * relocation plan -> evacuation route.
    */
   private fun recomputeIntelligence(selectInitialShelter: Boolean = false) {
     val state = _uiState.value
     val location = state.userLocation
-    val hazards = state.hazardZones
+    val now = System.currentTimeMillis()
+
+    // Hazard picture assembly — LIVE data first, never silently mixed:
+    //   1. REAL provider events (normalized to HazardZone for every engine).
+    //   2. Unverified user incident reports (TTL-expired ones drop out).
+    //   3. DEMO MODE pilot zones — ONLY when the user explicitly enabled it.
+    val liveZones = toHazardZones(
+      state.disasterEvents.filter { it.isValid(now) }
+    )
+    val reportZones = toHazardZones(
+      state.userIncidentReports
+        .map { it.toDisasterEvent(now) }
+        .filter { it.isValid(now) }
+    )
+    val demoZones = if (state.isDemoMode) PilotRegionData.hazardZones else emptyList()
+    val hazards = (liveZones + reportZones + demoZones).distinctBy { it.id }
+
     val zones = state.safeZones
+    // Safe zones exist ONLY in the pilot coverage area; outside it, ranking
+    // simply yields no feasible shelter (honest empty state), never a fake
+    // nationwide shelter list.
+    val zonesInScope = if (state.isDemoMode || IndiaGeo.isWithinPilotCoverage(location)) {
+      zones
+    } else {
+      zones.filter { IndiaGeo.isWithinPilotCoverage(it.point) }
+    }
 
     val risk = RiskAssessmentEngine.assess(
       location = location,
       hazards = hazards,
-      provenanceNote = if (state.isUserLocationFallback) {
-        "Location: India fallback (Painavu) • Hazards: simulated pilot data"
-      } else {
-        "Location: device GPS • Hazards: simulated pilot data"
+      provenanceNote = when {
+        state.isDemoMode ->
+          "Location: ${if (state.isUserLocationFallback) "India centre (no GPS)" else "device GPS"} • Demo mode: labeled pilot hazards shown"
+        state.isUserLocationFallback ->
+          "Location: India centre (no GPS yet) • Hazards: live provider feeds"
+        else ->
+          "Location: device GPS • Hazards: live provider feeds + user reports"
       }
     )
 
@@ -191,7 +336,7 @@ class VippattiViewModel(
       hasVulnerableMembers = state.userProfile.vulnerableCategoryIds.isNotEmpty(),
       needsMedicalSupport = state.userProfile.needsMedicalSupport
     )
-    val ranked = SafeZoneEvaluator.ranked(zones, ctx)
+    val ranked = SafeZoneEvaluator.ranked(zonesInScope, ctx)
     val action = ActionAdvisor.recommend(risk, ranked)
     val plan = RelocationPlanner.plan(
       risk,
@@ -202,6 +347,7 @@ class VippattiViewModel(
     _uiState.update {
       it.copy(
         personalRisk = risk,
+        hazardZones = hazards,
         rankedShelters = ranked,
         recommendedAction = action,
         relocationPlan = plan
@@ -218,7 +364,7 @@ class VippattiViewModel(
 
   /**
    * Applies a REAL hardware GPS fix (reported by the osmdroid location overlay).
-   * Real fixes replace the static India fallback and re-run every decision;
+   * Real fixes replace the India-centre placeholder and re-run every decision;
    * re-routing is movement-guarded so 1 Hz fixes never starve the OSRM request.
    */
   fun applyRealGpsFix(latitude: Double, longitude: Double) {
@@ -233,6 +379,130 @@ class VippattiViewModel(
       recomputeIntelligence()
       maybeRecalculateRouteForNewLocation()
     }
+  }
+
+  // ====================================================== DISASTER PIPELINE
+
+  /**
+   * REAL disaster-data refresh: queries every live provider, updates the
+   * cache, and re-runs the intelligence pipeline against the fresh events.
+   */
+  fun syncDisasterData() {
+    if (_uiState.value.isDisasterSyncing) return
+    disasterJob?.cancel()
+    disasterJob = viewModelScope.launch {
+      _uiState.update { it.copy(isDisasterSyncing = true) }
+      val feed = disasterRepository.refresh()
+      applyDisasterFeed(feed)
+      _uiState.update { it.copy(isDisasterSyncing = false) }
+    }
+  }
+
+  /** Publishes a disaster feed into state with honest per-source labels. */
+  private fun applyDisasterFeed(feed: com.example.data.disaster.DisasterFeed) {
+    val now = System.currentTimeMillis()
+    _uiState.update {
+      it.copy(
+        disasterEvents = feed.events.filter { e -> e.isValid(now) },
+        providerStates = feed.providerStates,
+        isDisasterDataLive = feed.isAnyLive,
+        disasterLastSyncMillis = feed.providerStates
+          .mapNotNull { s -> s.fetchedAtMillis.takeIf { t -> t > 0 } }
+          .maxOrNull()
+      )
+    }
+    recomputeIntelligence()
+  }
+
+  /** Toggles one map layer (map layer panel). */
+  fun toggleLayer(layer: DisasterLayer) {
+    _uiState.update {
+      val next = it.enabledLayers.toMutableSet()
+      if (layer in next) next.remove(layer) else next.add(layer)
+      it.copy(enabledLayers = next)
+    }
+  }
+
+  /**
+   * Explicit DEMO MODE toggle. ON -> the labeled Idukki pilot dataset is
+   * shown for demonstration and every demo hazard stays provenance-labeled.
+   * OFF -> only REAL provider data and user reports remain.
+   */
+  fun setDemoMode(enabled: Boolean) {
+    _uiState.update {
+      it.copy(
+        isDemoMode = enabled,
+        snackbarMessage = if (enabled) {
+          "Demo mode ON — labeled pilot data for demonstration. Live provider data continues in parallel."
+        } else {
+          "Demo mode OFF — showing live provider data and user reports only."
+        }
+      )
+    }
+    recomputeIntelligence()
+  }
+
+  // ==================================================== USER INCIDENT REPORTS
+
+  /** Opens the "Add a Report" incident dialog. */
+  fun openIncidentReportDialog() {
+    _uiState.update { it.copy(showIncidentReportDialog = true) }
+  }
+
+  fun closeIncidentReportDialog() {
+    _uiState.update { it.copy(showIncidentReportDialog = false) }
+  }
+
+  /**
+   * Submits a citizen incident report: stored locally, TTL-expired after
+   * [com.example.data.disaster.INCIDENT_TTL_MILLIS], always displayed as an
+   * UNVERIFIED user report — never as confirmed fact.
+   */
+  fun submitIncidentReport(
+    category: IncidentCategory,
+    severityLabel: String,
+    description: String
+  ) {
+    val state = _uiState.value
+    if (state.isUserLocationFallback) {
+      _uiState.update {
+        it.copy(
+          showIncidentReportDialog = false,
+          snackbarMessage = "Location unavailable — enable device GPS before reporting an incident."
+        )
+      }
+      return
+    }
+    val severity = HazardSeverity.entries.firstOrNull { it.label == severityLabel }
+      ?: category.defaultSeverity()
+    val report = IncidentReport(
+      id = "user-${System.currentTimeMillis()}",
+      category = category,
+      description = description.trim(),
+      location = state.userLocation,
+      reportedAtMillis = System.currentTimeMillis(),
+      severity = severity,
+      reporterName = state.userProfile.fullName
+    )
+    _uiState.update {
+      it.copy(
+        showIncidentReportDialog = false,
+        userIncidentReports = (it.userIncidentReports + report).takeLast(MAX_INCIDENT_REPORTS)
+      )
+    }
+    recomputeIntelligence()
+    _uiState.update {
+      it.copy(snackbarMessage = "Report added — unverified user report shown on the map for others to verify.")
+    }
+  }
+
+  /** Opens the tap-detail panel for a disaster event. */
+  fun openDisasterEventDetail(event: DisasterEvent) {
+    _uiState.update { it.copy(disasterEventDetail = event) }
+  }
+
+  fun closeDisasterEventDetail() {
+    _uiState.update { it.copy(disasterEventDetail = null) }
   }
 
   /**
@@ -420,24 +690,71 @@ class VippattiViewModel(
     }
   }
 
+  /**
+   * REAL refresh: pulls live disaster news from GNews (all three scopes,
+   * quota-aware) AND re-syncs the India-wide disaster providers, then
+   * re-labels the sync banner from the actual results.
+   */
   fun syncData() {
-    viewModelScope.launch {
+    syncDisasterData()
+    newsJob?.cancel()
+    newsJob = viewModelScope.launch {
       _uiState.update { it.copy(isSyncing = true) }
-      delay(1000)
-      val timeNow = SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date())
-      _uiState.update {
-        it.copy(
+      val feed = newsRepository.refresh()
+      applyNewsFeed(feed)
+      _uiState.update { state ->
+        state.copy(
           isSyncing = false,
-          lastSyncTime = "Today at $timeNow • Emergency SMS live",
-          snackbarMessage = "Disaster intelligence, OSM tiles & radar grid refreshed"
+          snackbarMessage = when {
+            feed.articles.isNotEmpty() && feed.error == null ->
+              "Disaster intelligence refreshed — ${feed.articles.size} live GNews articles"
+            feed.error != null -> feed.error.userMessage
+            else -> "No GNews articles matched the pilot queries — try again later"
+          }
         )
       }
     }
   }
 
+  /** Publishes a real GNews feed into state with an honest sync label. */
+  private fun applyNewsFeed(feed: NewsFeed) {
+    val fetchedLabel = feed.lastFetchedAtMillis?.let { millis ->
+      SimpleDateFormat("hh:mm a", Locale.getDefault()).format(Date(millis))
+    }
+    _uiState.update {
+      it.copy(
+        newsArticles = feed.articles,
+        newsHero = feed.hero,
+        isNewsFromCache = feed.isFromCache,
+        newsLastFetchedAtMillis = feed.lastFetchedAtMillis,
+        newsEverLoaded = feed.articles.isNotEmpty(),
+        newsError = feed.error,
+        lastSyncTime = when {
+          feed.articles.isNotEmpty() && feed.isFromCache ->
+            "OFFLINE CACHE • ${feed.articles.size} articles • fetched $fetchedLabel"
+          feed.articles.isNotEmpty() ->
+            "LIVE SYNC • ${feed.articles.size} articles • $fetchedLabel"
+          feed.error != null -> feed.error.userMessage
+          else -> "No disaster news cached — tap Sync to fetch live articles"
+        }
+      )
+    }
+  }
+
+  /**
+   * Arms the REAL spoken bulletin: state carries the composed text and the
+   * MainActivity TextToSpeech engine speaks it; the on-screen ticker runs
+   * until the engine reports completion (or unavailability).
+   */
   fun toggleAudioBulletin() {
     val willPlay = !_uiState.value.isAudioPlaying
-    _uiState.update { it.copy(isAudioPlaying = willPlay) }
+    _uiState.update {
+      it.copy(
+        isAudioPlaying = willPlay,
+        audioBulletinText = if (willPlay) buildAudioBulletin() else "",
+        audioPlaybackSeconds = 0
+      )
+    }
 
     audioJob?.cancel()
     if (willPlay) {
@@ -449,6 +766,37 @@ class VippattiViewModel(
           _uiState.update { it.copy(audioPlaybackSeconds = seconds) }
         }
       }
+    }
+  }
+
+  /** Bulletin text built ONLY from real current state — nothing invented. */
+  private fun buildAudioBulletin(): String {
+    val state = _uiState.value
+    return NewsTtsBulletin.compose(
+      riskLevelLabel = state.personalRisk?.level?.label ?: "not yet assessed",
+      recommendedActionTitle = state.recommendedAction?.title,
+      actionExplanation = state.recommendedAction?.explanation,
+      articles = state.newsArticles,
+      nowMillis = System.currentTimeMillis(),
+      isFromCache = state.isNewsFromCache
+    )
+  }
+
+  /** TextToSpeech finished (or failed) — stop the ticker honestly. */
+  fun onTtsBulletinFinished() {
+    audioJob?.cancel()
+    _uiState.update { it.copy(isAudioPlaying = false, audioPlaybackSeconds = 0) }
+  }
+
+  /** No TextToSpeech engine on this device — say so instead of faking playback. */
+  fun onTtsUnavailable() {
+    audioJob?.cancel()
+    _uiState.update {
+      it.copy(
+        isAudioPlaying = false,
+        audioPlaybackSeconds = 0,
+        snackbarMessage = "Text-to-speech unavailable on this device — bulletin cannot be spoken"
+      )
     }
   }
 
