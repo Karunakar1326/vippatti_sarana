@@ -18,10 +18,15 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.Alignment
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -231,12 +236,37 @@ fun VippattiAppRoot(
         .statusBarsPadding()
         .padding(bottom = innerPadding.calculateBottomPadding())
     ) {
+      val remoteConfig by com.example.config.ConfigRegistry.manager.configState.collectAsStateWithLifecycle()
+
       Crossfade(
         targetState = uiState.currentTab,
         animationSpec = tween(durationMillis = 250),
         label = "tab_crossfade"
       ) { tab ->
-        when (tab) {
+        Column(modifier = Modifier.padding(remoteConfig.homePadding.dp)) {
+            if (remoteConfig.emergencyBannerEnabled && remoteConfig.emergencyBannerText.isNotBlank()) {
+                androidx.compose.material3.Text(
+                    text = remoteConfig.emergencyBannerText,
+                    color = androidx.compose.ui.graphics.Color.White,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(androidx.compose.ui.graphics.Color.Red)
+                        .padding(16.dp)
+                )
+            }
+            if (remoteConfig.appLogoUrl.isNotBlank() && tab == ScreenTab.PROFILE) {
+                // Example of placing remote logo on Profile tab (or it could be in a top bar)
+                coil.compose.AsyncImage(
+                    model = remoteConfig.appLogoUrl,
+                    contentDescription = "App Logo",
+                    modifier = Modifier.size(100.dp).align(androidx.compose.ui.Alignment.CenterHorizontally),
+                    error = androidx.compose.ui.res.painterResource(id = android.R.drawable.sym_def_app_icon)
+                )
+            }
+
+            // Screen Content
+            Box(modifier = Modifier.weight(1f)) {
+                when (tab) {
           ScreenTab.NEWS_DISPATCHES -> DispatchesScreen(
             uiState = uiState,
             onSync = { viewModel.syncData() },
@@ -291,6 +321,8 @@ fun VippattiAppRoot(
             onOpenSituationReport = { viewModel.openSituationReportDialog() }
           )
         }
+       }
+      }
       }
 
       // Modal Dialogs

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "740253635226",
+    "project_id": "vipatti-sarana",
+    "storage_bucket": "vipatti-sarana.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:740253635226:android:ec3f6f54160a5b1a99c523",
+        "android_client_info": {
+          "package_name": "com.aistudio.vippattisarana.gaqgel"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyALRQSIi-6C4yCJHO3q3uSJrk5KMQRWNkE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
