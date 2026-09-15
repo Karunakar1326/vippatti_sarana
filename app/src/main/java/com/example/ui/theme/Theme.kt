@@ -1,5 +1,10 @@
 package com.example.ui.theme
 
+import android.graphics.Color.parseColor
+import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.getValue
+import com.example.config.ConfigRegistry
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -67,7 +72,23 @@ fun VippattiTheme(
   darkTheme: Boolean = true, // Default to tactical night mode matching the screens
   content: @Composable () -> Unit,
 ) {
-  val palette = if (darkTheme) DarkVippattiColors else LightVippattiColors
+  val remoteConfig by ConfigRegistry.manager.configState.collectAsStateWithLifecycle()
+  
+  val basePalette = if (darkTheme) DarkVippattiColors else LightVippattiColors
+  
+  val primaryOverride = try {
+      if (remoteConfig.primaryColorHex.isNotBlank()) Color(parseColor(remoteConfig.primaryColorHex)) else basePalette.neonEmerald
+  } catch (e: Exception) { basePalette.neonEmerald }
+
+  val secondaryOverride = try {
+      if (remoteConfig.secondaryColorHex.isNotBlank()) Color(parseColor(remoteConfig.secondaryColorHex)) else basePalette.tacticalCyan
+  } catch (e: Exception) { basePalette.tacticalCyan }
+
+  val palette = basePalette.copy(
+      neonEmerald = primaryOverride,
+      tacticalCyan = secondaryOverride
+  )
+  
   val colorScheme = if (darkTheme) vippattiDarkScheme(palette) else vippattiLightScheme(palette)
 
   CompositionLocalProvider(LocalVippattiColors provides palette) {
