@@ -1,0 +1,85 @@
+name: Build Android APK & Public Download Link
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create a GitHub Release with APK'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Package Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare APK for Artifact Upload
+        run: |
+          mkdir -p build-output
+          cp app/build/outputs/apk/debug/app-debug.apk build-output/Vippatti-Sarana-debug.apk
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vippatti-Sarana-APK
+          path: build-output/Vippatti-Sarana-debug.apk
+          retention-days: 90
+
+      - name: Generate Public Download Links in Step Summary
+        run: |
+          echo "## 📱 Mobile APK Download Links" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Your Android APK (**Vippatti-Sarana-debug.apk**) has been successfully built!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌐 Option 1: Direct Public Download Link (No GitHub Login Required)" >> $GITHUB_STEP_SUMMARY
+          echo "Anyone can download the APK directly using this public link:" >> $GITHUB_STEP_SUMMARY
+          echo "[👉 Download Vippatti-Sarana-debug.apk](https://nightly.link/${{ github.repository }}/workflows/build-apk/main/Vippatti-Sarana-APK.zip)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Option 2: GitHub Action Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "Scroll down to the **Artifacts** section at the bottom of this run summary page to download **Vippatti-Sarana-APK**." >> $GITHUB_STEP_SUMMARY
+
+      - name: Create & Publish GitHub Release (On Tag Push or Manual Request)
+        if: startsWith(github.ref, 'refs/tags/') || inputs.create_release == true
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build-output/Vippatti-Sarana-debug.apk
+          name: Release ${{ github.ref_name }}
+          body: |
+            ## 🚀 Vippatti Sarana - Automated Release
+            
+            Download the Android APK below to install Vippatti Sarana on your mobile device.
+            
+            - **APK Name**: `Vippatti-Sarana-debug.apk`
+            - **Commit**: `${{ github.sha }}`
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

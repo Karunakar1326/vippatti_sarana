@@ -1,5 +1,8 @@
 # Vippatti Sarana
 
+[![Build Android APK](https://github.com/Karunakar1326/vippatti_sarana/actions/workflows/build-apk.yml/badge.svg)](https://github.com/Karunakar1326/vippatti_sarana/actions/workflows/build-apk.yml)
+[![Direct APK Download](https://img.shields.io/badge/Download-APK-brightgreen?logo=android)](https://nightly.link/Karunakar1326/vippatti_sarana/workflows/build-apk/main/Vippatti-Sarana-APK.zip)
+
 > **Disaster Intelligence & Emergency Response Platform for Vulnerable Communities**
 
 Vippatti Sarana is an Android-based disaster management application designed to help users assess disaster risks, identify safer areas, access evacuation routes, and receive relevant disaster information.
@@ -96,14 +99,19 @@ README.md
 
 To install **Vippatti Sarana** on your Android device:
 
-1. Go to the **[Releases](../../releases)** section of this repository.
-2. Open the **latest release**.
-3. Inside the release, you will find a **Google Drive link**.
-4. Open the Drive link and download the **APK** file.
-5. On your Android device, enable **"Install from unknown sources"** (if prompted) for your browser or file manager.
-6. Open the downloaded APK and install the app.
+### Option 1: Direct Public Download Link (Instant Download)
+Click the direct public download link below to get the latest built APK without needing a GitHub account:
+👉 **[Download Vippatti-Sarana-debug.apk](https://nightly.link/Karunakar1326/vippatti_sarana/workflows/build-apk/main/Vippatti-Sarana-APK.zip)**
 
-> **Note:** Always download the APK from the **latest release** to ensure you have the most up-to-date version of the app.
+### Option 2: GitHub Releases & Artifacts
+1. Go to the **[Releases](../../releases)** section of this repository.
+2. Open the **latest release** to download `Vippatti-Sarana-debug.apk`.
+3. Alternatively, check the latest run under the **[Actions](../../actions/workflows/build-apk.yml)** tab and download the **Vippatti-Sarana-APK** artifact.
+
+### Installation Instructions
+1. Download the APK using one of the links above.
+2. On your Android device, enable **"Install from unknown sources"** (if prompted) for your browser or file manager.
+3. Open the downloaded APK file and follow the on-screen prompts to install the app.
 
 ---
 
