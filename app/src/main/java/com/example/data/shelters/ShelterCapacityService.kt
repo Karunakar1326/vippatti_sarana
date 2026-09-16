@@ -6,7 +6,7 @@ import com.example.data.model.SafeZone
 /**
  * Carrying-capacity intelligence.
  *
- * Works on the current static occupancy data today and is structured for
+ * Works on the current stored occupancy data today and is structured for
  * future dynamic capacity updates: occupancy flows in as SafeZone records
  * (from a shelter registry feed), and every derived calculation below adapts
  * automatically. No live feed is claimed at this stage.
@@ -97,7 +97,7 @@ object ShelterCapacityService {
    * Shelter load balancing: rank shelters by available capacity headroom so a
    * surge of evacuees spreads across the network instead of overloading one
    * shelter. Prepared for population redistribution planning; uses current
-   * static occupancy only.
+   * stored occupancy only.
    */
   fun loadBalancedOrder(zones: List<SafeZone>): List<SafeZone> =
     zones.sortedByDescending { it.availableCapacity }

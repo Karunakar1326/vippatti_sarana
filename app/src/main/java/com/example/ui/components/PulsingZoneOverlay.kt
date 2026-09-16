@@ -45,6 +45,9 @@ class PulsingZoneOverlay(
 
   private var startMillis = -1L
 
+  /** Coarse redraw throttle so many pulsing overlays never spam invalidations. */
+  private var lastInvalidateMillis = -1L
+
   /**
    * Base-circle pixel radius derived from two projected points (center and a
    * point radius meters due north) so the zone keeps its real-world size
@@ -86,8 +89,13 @@ class PulsingZoneOverlay(
         pulsePaint.alpha = ((1f - wave) * 170).toInt().coerceIn(20, 170)
         c.drawCircle(centerPx.x.toFloat(), centerPx.y.toFloat(), pulseRadius, pulsePaint)
       }
-      // Continuous animation — keep invalidating while visible.
-      mapView.postInvalidate()
+      // Continuous animation — request redraws at ~15 fps (never every
+      // frame) so large multi-zone maps stay smooth on low-end devices.
+      val nowSync = System.currentTimeMillis()
+      if (nowSync - lastInvalidateMillis >= INVALIDATE_INTERVAL_MS) {
+        lastInvalidateMillis = nowSync
+        mapView.postInvalidate()
+      }
     }
   }
 
@@ -109,5 +117,6 @@ class PulsingZoneOverlay(
 
   companion object {
     private const val PULSE_EXPANSION = 0.35f
+    private const val INVALIDATE_INTERVAL_MS = 66L // ~15 fps
   }
 }

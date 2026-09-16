@@ -73,22 +73,32 @@ class RoutingAndShelterEvaluationTest {
 
   @Test
   fun `rejected shelter inside hazard area carries the real rejection reason`() {
-    val evaluated = evaluateAll()
-    // Cheruthoni hall sits inside the extreme Periyar flood zone -> rejected.
-    val rejected = evaluated.first { it.zone.id == "sz-cheruthoni-hall" }
-    assertFalse(rejected.isFeasible)
-    assertEquals(RejectionReason.INSIDE_HAZARD_AREA, rejected.rejectionReason)
-    assertEquals(0, rejected.score)
+    // No mock shelter sits inside danger by design (every paired shelter is
+    // genuinely safe), so this builds a synthetic shelter AT the Assam flood
+    // centre to pin the INSIDE_HAZARD_AREA path.
+    val flood = PilotRegionData.hazardZones.first { it.id == "hz-flood-assam-dibrugarh" }
+    val inside = PilotRegionData.safeZones.first { it.id == "sz-assam-dibrugarh-hall" }
+      .copy(id = "sz-synthetic-inside", lat = flood.center.lat, lon = flood.center.lon)
+    val evaluation = SafeZoneEvaluator.evaluate(
+      inside,
+      SafeZoneEvaluator.RequestContext(
+        origin = GeoPoint(27.53, 94.97),
+        hazards = PilotRegionData.hazardZones
+      )
+    )
+    assertFalse(evaluation.isFeasible)
+    assertEquals(RejectionReason.INSIDE_HAZARD_AREA, evaluation.rejectionReason)
+    assertEquals(0, evaluation.score)
   }
 
   @Test
   fun `full shelter is rejected as unavailable capacity`() {
     // Capacity is checked ONLY for shelters outside every hazard area, so this
-    // test uses a clean-location copy of the pilot's full shelter.
+    // test uses a clean-location copy of the mock's full shelter.
     val evaluated = SafeZoneEvaluator.evaluateAll(
       listOf(
-        PilotRegionData.safeZones.first { it.id == "sz-nedumkandam-hall" }
-          .copy(lat = 9.83917, lon = 77.00472)
+        PilotRegionData.safeZones.first { it.id == "sz-odisha-puri-shelter" }
+          .copy(lat = 19.8500, lon = 85.8800)
       ),
       SafeZoneEvaluator.RequestContext(
         origin = GeoPoint(9.85, 76.95),

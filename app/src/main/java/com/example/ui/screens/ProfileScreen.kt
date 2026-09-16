@@ -821,7 +821,7 @@ fun ProfileScreen(
               onClick = {
                 try {
                   val smsIntent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:${contact.phone.replace(" ", "")}")).apply {
-                    // Static pilot coordinates until a REAL GPS fix is applied (Painavu, Idukki, Kerala, India).
+                    // Fallback India-centre coordinates until a REAL GPS fix is applied.
                     val locationTag = if (uiState.isUserLocationFallback) " (INDIA FALLBACK)" else " (DEVICE GPS)"
                     putExtra(
                       "sms_body",

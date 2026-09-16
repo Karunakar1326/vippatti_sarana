@@ -34,7 +34,11 @@ class NewsRepository(
       when (val call = service.search(scope, apiKey)) {
         is GNewsCall.Success -> {
           collected += call.articles
-          withContext(Dispatchers.IO) { cache.write(scope, call.articles, now) }
+          // Never overwrite a useful shard with an empty live result — an
+          // empty scope keeps its previous (past) coverage for the fallback.
+          if (call.articles.isNotEmpty()) {
+            withContext(Dispatchers.IO) { cache.write(scope, call.articles, now) }
+          }
         }
         is GNewsCall.Failure -> {
           // Quota/auth/network failure — stop the cascade; remaining scopes
@@ -47,7 +51,7 @@ class NewsRepository(
     if (collected.isEmpty()) {
       return cachedOnlyFeed(error)
     }
-    val articles = mergeArticles(collected)
+    val articles = mergeArticles(NewsFilter.filterForDisaster(collected))
     return NewsFeed(
       articles = articles,
       hero = NewsPresentation.pickHero(articles),
@@ -63,7 +67,7 @@ class NewsRepository(
    */
   suspend fun ensureLoaded(): NewsFeed {
     val cached = withContext(Dispatchers.IO) { readAllUsableCached() }
-    val articles = mergeArticles(cached.flatMap { it.articles })
+    val articles = mergeArticles(NewsFilter.filterForDisaster(cached.flatMap { it.articles }))
     val newestFetch = cached.maxOfOrNull { it.fetchedAtMillis }
     if (newestFetch != null && NewsCachePolicy.isFresh(newestFetch, clock())) {
       return NewsFeed(
@@ -79,7 +83,7 @@ class NewsRepository(
 
   private suspend fun cachedOnlyFeed(error: NewsError?): NewsFeed {
     val cached = withContext(Dispatchers.IO) { readAllUsableCached() }
-    val articles = mergeArticles(cached.flatMap { it.articles })
+    val articles = mergeArticles(NewsFilter.filterForDisaster(cached.flatMap { it.articles }))
     return NewsFeed(
       articles = articles,
       hero = NewsPresentation.pickHero(articles),

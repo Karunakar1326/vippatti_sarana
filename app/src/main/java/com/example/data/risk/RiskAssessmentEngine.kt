@@ -35,7 +35,8 @@ data class PersonalRiskAssessment(
 /**
  * Pure personal-risk engine. The location flows in from REAL hardware GPS when
  * available (or the clearly-labeled India fallback), and hazards flow in from
- * the current static pilot set (later: IMD / KSDMA / NRSC live feeds).
+ * the current India-wide set (live provider feeds + user reports + the
+ * labeled mock network while it is toggled on).
  */
 object RiskAssessmentEngine {
 
@@ -63,7 +64,7 @@ object RiskAssessmentEngine {
           "No active hazard covers your location. Nearest watched area is " +
             "${primary?.name ?: nearest.hazard.name} about ${GeoMath.formatKm(nearest.distanceToCenterMeters)} away."
         } else {
-          "No active hazard covers your location in the pilot hazard picture."
+          "No active hazard covers your location on the current hazard picture."
         }
       }
       else -> "${primary.severity.label} ${primary.type.label.lowercase()} risk because your current " +

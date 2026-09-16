@@ -494,6 +494,7 @@ fun AddContactDialog(
 @Composable
 fun HazardZoneDetailDialog(
   zone: com.example.data.model.HazardZone,
+  detail: com.example.data.disaster.ZoneDetail,
   onDismiss: () -> Unit
 ) {
   Dialog(onDismissRequest = onDismiss) {
@@ -544,10 +545,80 @@ fun HazardZoneDetailDialog(
         }
 
         Text(
-          text = "Affected area: ${com.example.data.model.GeoMath.formatKm(zone.radiusMeters)} radius from zone center",
+          text = String.format(
+            java.util.Locale.US,
+            "Zone center: %.4f N, %.4f E",
+            zone.center.lat,
+            zone.center.lon
+          ),
           fontSize = 11.sp,
           color = TacticalOnSurface
         )
+
+        // --- DISASTER-AWARE DYNAMIC SECTIONS (rendered verbatim from the
+        // mapper: rows whose backend field is missing read "Data unavailable",
+        // never an invented value) ---
+        detail.sections.forEach { section ->
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(12.dp))
+              .background(ObsidianContainerHigh)
+              .border(1.dp, TacticalOutlineVariant.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+              .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            Text(
+              text = section.heading,
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Black,
+              color = TacticalCyan,
+              letterSpacing = 0.6.sp
+            )
+            section.fields.forEach { field ->
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+              ) {
+                Text(
+                  text = field.label,
+                  fontSize = 11.sp,
+                  color = TacticalOnSurfaceVariant,
+                  modifier = Modifier.weight(0.42f)
+                )
+                Text(
+                  text = field.value ?: "Data unavailable",
+                  fontSize = 11.sp,
+                  fontWeight = if (field.value != null) FontWeight.SemiBold else FontWeight.Normal,
+                  color = if (field.value != null) TacticalOnSurface else TacticalOnSurfaceVariant,
+                  lineHeight = 14.sp,
+                  modifier = Modifier.weight(0.58f)
+                )
+              }
+            }
+          }
+        }
+
+        // --- NEAREST VIABLE SAFE ZONE (computed live; honest empty state) ---
+        val nearest = detail.nearestSafeZone
+        if (nearest != null) {
+          Text(
+            text = "Nearest viable safe zone: ${nearest.name} — ${nearest.distanceText} away (${nearest.capacityText})",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = NeonEmerald,
+            lineHeight = 14.sp
+          )
+        } else {
+          Text(
+            text = "No viable safe zone identified",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = WarningAmber,
+            lineHeight = 14.sp
+          )
+        }
         Text(
           text = zone.sourceStatus,
           fontSize = 11.sp,
@@ -649,7 +720,7 @@ fun DisasterEventDetailDialog(
             com.example.data.disaster.EventOrigin.OBSERVED -> "Observed (provider measurement)"
             com.example.data.disaster.EventOrigin.REPORTED -> "Reported by a citizen - UNVERIFIED"
             com.example.data.disaster.EventOrigin.DERIVED -> "Derived from provider data"
-            com.example.data.disaster.EventOrigin.SIMULATED -> "Simulated pilot data"
+            com.example.data.disaster.EventOrigin.SIMULATED -> "Simulated field data"
           }
         )
         DetailLine(
@@ -669,7 +740,8 @@ fun DisasterEventDetailDialog(
             is com.example.data.disaster.EventGeometry.Point ->
               String.format(java.util.Locale.US, "%.4f, %.4f", g.lat, g.lon)
             is com.example.data.disaster.EventGeometry.MultiPoint ->
-              "${g.points.size} points (first: " + String.format(
+              if (g.points.isEmpty()) "${g.points.size} points (no coordinates)"
+              else "${g.points.size} points (first: " + String.format(
                 java.util.Locale.US, "%.4f, %.4f", g.points.first().lat, g.points.first().lon
               ) + ")"
             is com.example.data.disaster.EventGeometry.Line ->
@@ -987,6 +1059,16 @@ fun SafeZoneDetailDialog(
             )
             Text(
               text = zone.locationNote,
+              fontSize = 10.sp,
+              color = TacticalOnSurfaceVariant
+            )
+            Text(
+              text = String.format(
+                java.util.Locale.US,
+                "%.4f N, %.4f E • ${zone.availableCapacity}/${zone.capacityTotal} spots free",
+                zone.lat,
+                zone.lon
+              ),
               fontSize = 10.sp,
               color = TacticalOnSurfaceVariant
             )
