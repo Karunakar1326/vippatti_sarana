@@ -92,7 +92,22 @@ README.md
 
 ---
 
-## ⚙️ Setup
+## 📥 Download & Install the App
+
+To install **Vippatti Sarana** on your Android device:
+
+1. Go to the **[Releases](../../releases)** section of this repository.
+2. Open the **latest release**.
+3. Inside the release, you will find a **Google Drive link**.
+4. Open the Drive link and download the **APK** file.
+5. On your Android device, enable **"Install from unknown sources"** (if prompted) for your browser or file manager.
+6. Open the downloaded APK and install the app.
+
+> **Note:** Always download the APK from the **latest release** to ensure you have the most up-to-date version of the app.
+
+---
+
+## ⚙️ Setup (For Developers)
 
 ### Requirements
 
