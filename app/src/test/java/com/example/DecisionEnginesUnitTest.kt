@@ -87,13 +87,16 @@ class DecisionEnginesUnitTest {
   // ------------------------------------------------------ Evaluator
   @Test
   fun `evaluator rejects shelters inside hazard zones`() {
+    // Synthetic shelter AT the Assam flood centre (no mock shelter sits
+    // inside danger by design) pins the INSIDE_HAZARD_AREA path.
+    val flood = PilotRegionData.hazardZones.first { it.id == "hz-flood-assam-dibrugarh" }
+    val inside = PilotRegionData.safeZones.first { it.id == "sz-assam-dibrugarh-hall" }
+      .copy(id = "sz-synthetic-inside", lat = flood.center.lat, lon = flood.center.lon)
     val ctx = SafeZoneEvaluator.RequestContext(
-      origin = GeoPoint(9.85, 76.95),
+      origin = GeoPoint(27.53, 94.97),
       hazards = PilotRegionData.hazardZones
     )
-    // Cheruthoni shelter sits inside the extreme flood zone -> rejected.
-    val cheruthoni = PilotRegionData.safeZones.first { it.id == "sz-cheruthoni-hall" }
-    val evaluation = SafeZoneEvaluator.evaluate(cheruthoni, ctx)
+    val evaluation = SafeZoneEvaluator.evaluate(inside, ctx)
     assertEquals(false, evaluation.isFeasible)
     assertEquals(
       com.example.data.shelters.RejectionReason.INSIDE_HAZARD_AREA,

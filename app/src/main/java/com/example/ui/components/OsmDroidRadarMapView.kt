@@ -99,8 +99,10 @@ private const val ROUTE_WIDTH = 10.0f
  * OSRM road routing.
  *
  * Visual language (no tiny dot markers for zones):
- *   HAZARD    = large faded pulsing danger circles (PulsingZoneOverlay)
- *   SAFE ZONE = large faded pulsing safe circles (PulsingZoneOverlay)
+ *   HAZARD    = large faded pulsing circles in the DISASTER-TYPE color
+ *               (flood blue, fire orange, cyclone purple ... — see
+ *               DisasterTypeColors; legend row above the map keys each color)
+ *   SAFE ZONE = large faded pulsing safe circles (emerald = open, amber = full)
  *   USER      = hardware GPS location overlay (dot + accuracy ring)
  *   ROUTE     = OSRM evacuation polyline
  */
@@ -175,7 +177,7 @@ fun OsmDroidRadarMapView(
 
   // REDEPLOY ZONE OVERLAYS WHEN STATE CHANGES (audit item 4). The factory runs
   // exactly once, so hazard/safe-zone lists that arrive after first composition
-  // (disaster sync completes, demo mode toggles, live events expire) previously
+  // (disaster sync completes, mock toggle flips, live events expire) previously
   // never reached the map. drawRoute stays guarded separately below.
   LaunchedEffect(hazardZones) { mapState.deployHazardZones(hazardZones, onHazardZoneTapped) }
   LaunchedEffect(safeZones) { mapState.deploySafeZones(safeZones, onSafeZoneSelected, onSafeZoneTapped) }
@@ -312,7 +314,7 @@ fun OsmDroidRadarMapView(
         .padding(horizontal = 6.dp, vertical = 3.dp)
     ) {
       Text(
-        text = "Idukki ? Kerala ? India ? osmdroid / OpenStreetMap / OSRM",
+        text = "India ? osmdroid / OpenStreetMap / OSRM",
         fontSize = 9.sp,
         fontWeight = FontWeight.Medium,
         color = TacticalOnSurfaceVariant
@@ -388,7 +390,7 @@ class OsmMapControllerHolder(
     osmConfig.osmdroidBasePath = basePath
     osmConfig.osmdroidTileCache = tilePath
 
-    // 2. Create MapView ? opens directly on the India pilot region.
+    // 2. Create MapView ? opens directly on the India network region.
     val view = MapView(context).apply {
       setTileSource(tileSources[0])
       setMultiTouchControls(true)
@@ -437,7 +439,7 @@ class OsmMapControllerHolder(
     return view
   }
 
-  /** Severity-colored large faded danger circles (idempotent: stale overlays removed first). */
+  /** Disaster-colored large faded danger circles (idempotent: stale overlays removed first). */
   fun deployHazardZones(
     hazardZones: List<HazardZone>,
     onHazardZoneTapped: (HazardZone) -> Unit
@@ -563,20 +565,16 @@ class OsmMapControllerHolder(
     view.invalidate()
   }
 
-  /** Honest marker colors: red family for life-safety sources, amber for user reports. */
-  private fun disasterMarkerColor(event: DisasterEvent): Int = when {
-    event.source == DisasterSource.USER_REPORT -> 0xFFF59E0B.toInt()
-    event.severity == HazardSeverity.EXTREME -> 0xFFFF1744.toInt()
-    event.severity == HazardSeverity.HIGH -> 0xFFFF9100.toInt()
-    else -> 0xFFAB47BC.toInt()
+  /** Zone color follows the DISASTER TYPE (flood blue, fire orange ...). */
+  private fun disasterMarkerColor(event: DisasterEvent): Int {
+    if (event.source == DisasterSource.USER_REPORT) return 0xFFF59E0B.toInt()
+    return com.example.data.disaster.DisasterTypeColors.argbFor(
+      com.example.data.disaster.DisasterEventNormalizer.toHazardType(event.disasterType)
+    )
   }
 
-  private fun hazardColor(zone: HazardZone): Int = when (zone.severity) {
-    com.example.data.model.HazardSeverity.EXTREME -> 0xFFFF1744.toInt()
-    com.example.data.model.HazardSeverity.HIGH -> 0xFFFF9100.toInt()
-    com.example.data.model.HazardSeverity.MODERATE -> 0xFFAB47BC.toInt()
-    com.example.data.model.HazardSeverity.LOW -> 0xFFFDD835.toInt()
-  }
+  private fun hazardColor(zone: HazardZone): Int =
+    com.example.data.disaster.DisasterTypeColors.argbFor(zone.type)
 
   // ------------------------------------------------------------ controls
 
@@ -598,7 +596,7 @@ class OsmMapControllerHolder(
     if (myLoc != null) {
       mapView?.controller?.animateTo(myLoc)
     } else {
-      // No GPS fix yet ? fall back to the India pilot region center (labeled).
+      // No GPS fix yet ? fall back to the India network center (labeled).
       mapView?.controller?.animateTo(
         OsmGeoPoint(PilotRegionData.FALLBACK_USER_LOCATION.lat, PilotRegionData.FALLBACK_USER_LOCATION.lon)
       )
@@ -628,7 +626,12 @@ class OsmMapControllerHolder(
     onLiveNavStatusChanged(LiveNavStatus(isActive = false))
   }
 
-  /** Renders the current OSRM evacuation polyline (called on route changes). */
+  /**
+   * Renders the current evacuation polyline (called on route changes).
+   * Live OSRM road routes draw SOLID (exact road pathway); the instant
+   * offline corridor draws DASHED so it reads as a provisional preview
+   * until the road route swaps in — never mistaken for surveyed roads.
+   */
   fun displayRoute(route: RouteResult) {
     val mv = mapView ?: return
     currentRoutePolyline?.let { mv.overlays.remove(it) }
@@ -640,6 +643,9 @@ class OsmMapControllerHolder(
       outlinePaint.strokeWidth = ROUTE_WIDTH
       outlinePaint.strokeCap = Paint.Cap.ROUND
       outlinePaint.strokeJoin = Paint.Join.ROUND
+      outlinePaint.pathEffect =
+        if (route.isLiveOsrm) null
+        else android.graphics.DashPathEffect(floatArrayOf(28f, 22f), 0f)
     }
     currentRoutePolyline = polyline
     // Insert above zones, below the user location overlay.

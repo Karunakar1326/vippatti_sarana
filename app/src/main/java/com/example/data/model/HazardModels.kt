@@ -52,14 +52,14 @@ data class HazardZone(
   val trend: HazardTrend,
   /** Free-form source/status field (provenance label shown in UI). */
   val sourceStatus: String,
-  /** Timestamp/freshness ? epoch millis of last update; 0 = static pilot data. */
+  /** Timestamp/freshness ? epoch millis of last update; 0 = field record data. */
   val lastUpdatedMillis: Long,
   val provenance: DataProvenance
 )
 
 /**
  * A structured safe zone / relief shelter with full carrying-capacity and
- * resource intelligence. All shelter data is static pilot data; the structure
+ * resource intelligence. All shelter data is field-record data; the structure
  * is ready for a verified government shelter registry to replace it later.
  */
 data class SafeZone(

@@ -65,6 +65,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -90,6 +91,7 @@ import com.example.ui.components.OsmDroidRadarMapView
 import com.example.ui.theme.EmergencyRed
 import com.example.ui.theme.EmergencyRedBright
 import com.example.ui.theme.EmergencyRedContainer
+import com.example.ui.theme.LocalVippattiColors
 import com.example.ui.theme.NeonEmerald
 import com.example.ui.theme.NeonEmeraldContainer
 import com.example.ui.theme.ObsidianContainer
@@ -144,6 +146,7 @@ fun RadarMapScreen(
   onSubmitIncidentReport: (IncidentCategory, String, String) -> Unit,
   onOpenDisasterEventDetail: (DisasterEvent) -> Unit,
   onDismissDisasterEventDetail: () -> Unit,
+  onToggleMockData: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   var isSheetExpanded by remember { mutableStateOf(true) }
@@ -175,9 +178,11 @@ fun RadarMapScreen(
     var topOverlayHeightPx by remember { mutableStateOf(0) }
     val topOverlayPadding = (topOverlayHeightPx / density.density).dp
 
+    // Mock toggle OFF = FULLY EMPTY map: no hazard circles, no safe circles
+    // and no live event markers reach the engine — only base tiles + GPS dot.
     OsmDroidRadarMapView(
       hazardZones = uiState.hazardZones,
-      safeZones = uiState.safeZones,
+      safeZones = if (uiState.isMockDataVisible) uiState.safeZones else emptyList(),
       selectedSafeZone = uiState.selectedSafeZone,
       activeRoute = uiState.activeRoute,
       travelMode = uiState.travelMode,
@@ -186,7 +191,7 @@ fun RadarMapScreen(
       onHazardZoneTapped = onOpenHazardDetail,
       onSafeZoneTapped = onOpenSafeZoneDetail,
       onRealGpsFix = onRealGpsFix,
-      disasterEvents = uiState.disasterEvents,
+      disasterEvents = if (uiState.isMockDataVisible) uiState.disasterEvents else emptyList(),
       enabledLayers = uiState.enabledLayers,
       onDisasterEventTapped = onOpenDisasterEventDetail,
       modifier = Modifier.fillMaxSize(),
@@ -238,8 +243,13 @@ fun RadarMapScreen(
       DisasterStatusLayerRow(
         uiState = uiState,
         onToggleLayer = onToggleLayer,
-        onOpenIncidentReport = onOpenIncidentReport
+        onOpenIncidentReport = onOpenIncidentReport,
+        onToggleMockData = onToggleMockData
       )
+
+      // 2c. DISASTER-COLOR LEGEND — keys each zone color to its disaster
+      //     type. Auto-hides with the empty map (no zones -> no legend).
+      DisasterTypeLegend(types = uiState.hazardZones.map { it.type }.distinct())
 
 
       // 3. Live turn-by-turn HUD — directly under the risk strip while
@@ -428,8 +438,8 @@ private fun ExpandedSheetContent(
       onSelectSafeZone = onSelectSafeZone
     )
 
-    // 3. COMPACT WEATHER ROW.
-    CompactWeatherRow(weather = uiState.weather)
+    // 3. COMPACT WEATHER ROW (live Open-Meteo feed).
+    CompactWeatherRow(weather = uiState.weather, isLive = uiState.isWeatherLive)
 
     // 4. ROUTE INTELLIGENCE + NAVIGATION CONTROLS.
     RouteIntelligencePanel(
@@ -453,7 +463,7 @@ private fun ExpandedSheetContent(
 // ============================================================================
 
 /**
- * Horizontal card carousel of ALL pilot safe zones. Tapping a card SELECTS
+ * Horizontal card carousel of ALL India-network safe zones. Tapping a card SELECTS
  * that shelter as the evacuation destination — the ViewModel re-runs the
  * OSRM route to it and every downstream metric (distance, ETA, capacity,
  * route safety, hazard warnings, guidance) follows the selection.
@@ -474,6 +484,9 @@ private fun SafeZoneCarousel(
   }
 
   Column(modifier = Modifier.fillMaxWidth()) {
+    // Shortest-distance read-out (radar requirement 3): nearest FEASIBLE safe
+    // zone from the user's current position, recomputed on every evaluation.
+    val nearest = uiState.rankedShelters.minByOrNull { it.distanceMeters }
     Row(
       modifier = Modifier
         .fillMaxWidth()
@@ -495,7 +508,35 @@ private fun SafeZoneCarousel(
         modifier = Modifier.size(12.dp)
       )
     }
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 14.dp, vertical = 2.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Text(
+        text = if (!uiState.isMockDataVisible) {
+          "SIMULATED HIDDEN — tap DATA: CACHED to show India zones"
+        } else if (nearest != null) {
+          "NEAREST SAFE: ${nearest.zone.name} • " +
+            "${OsrmRoutingService.formatDistance(nearest.distanceMeters)} away"
+        } else if (uiState.safeZones.isEmpty()) {
+          "NO SAFE ZONES IN SCOPE"
+        } else {
+          "NO FEASIBLE SHELTER — all in danger / full"
+        },
+        fontSize = 9.sp,
+        fontWeight = FontWeight.Bold,
+        color = if (nearest != null) NeonEmerald else WarningAmber,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f)
+      )
+    }
 
+    // Mock OFF = empty carousel (matches the empty map); no shelter cards.
+    val visibleZones = if (uiState.isMockDataVisible) uiState.safeZones else emptyList()
     LazyRow(
       state = listState,
       modifier = Modifier
@@ -504,7 +545,7 @@ private fun SafeZoneCarousel(
       contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
       horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-      items(uiState.safeZones, key = { it.id }) { zone ->
+      items(visibleZones, key = { it.id }) { zone ->
         val isSelected = zone.id == selectedId
         SafeZoneCard(
           zone = zone,
@@ -759,12 +800,13 @@ private fun SafeZoneCard(
 }
 
 // ============================================================================
-// COMPACT WEATHER ROW — temp / rainfall / wind / 3-hr trend in one line
-// (SIMULATED pilot readings — labeled SIM DATA until a live IMD feed lands)
+// COMPACT WEATHER ROW — LIVE temp / rainfall / wind / 3-hr trend in one line
+// (Open-Meteo, keyless). Offline the cells honestly read "—" until a live
+// reading lands.
 // ============================================================================
 
 @Composable
-private fun CompactWeatherRow(weather: WeatherMetrics) {
+private fun CompactWeatherRow(weather: WeatherMetrics, isLive: Boolean) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
@@ -776,20 +818,21 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(10.dp)
   ) {
-    // Honest label: these readings are SIMULATED pilot data, not live IMD values.
+    // Live-source tag: LIVE once an Open-Meteo reading lands, otherwise the
+    // honest empty state.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
       Text(
-        text = "SIM",
+        text = if (isLive) "LIVE" else "NO",
         fontSize = 8.sp,
         fontWeight = FontWeight.Black,
-        color = WarningAmber,
+        color = if (isLive) NeonEmerald else TacticalOnSurfaceVariant,
         letterSpacing = 0.5.sp
       )
       Text(
-        text = "DATA",
+        text = if (isLive) "WX" else "FEED",
         fontSize = 8.sp,
         fontWeight = FontWeight.Black,
-        color = WarningAmber,
+        color = if (isLive) NeonEmerald else TacticalOnSurfaceVariant,
         letterSpacing = 0.5.sp
       )
     }
@@ -814,9 +857,7 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
       tint = TacticalCyan,
       modifier = Modifier.weight(1f)
     )
-    // 3-HR TREND — shown ONLY when a real trend is present. The pilot model
-    // ships no live weather feed, so the default is an honest neutral line;
-    // a "Worsening" claim without a source would fabricate weather state.
+    // 3-HR TREND — live Open-Meteo delta (Warming / Cooling / Steady).
     val hasRealTrend = weather.trend3h.isNotBlank()
     Row(
       modifier = Modifier.weight(1.2f),
@@ -824,14 +865,20 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
       horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
       if (hasRealTrend) {
+        val isCooling = weather.trend3h.contains("Cooling", ignoreCase = true)
+        val isSteady = weather.trend3h.contains("Steady", ignoreCase = true)
         Icon(
-          imageVector = if (weather.trend3h.contains("Worsen", ignoreCase = true)) {
-            Icons.Default.TrendingDown
-          } else {
-            Icons.Default.TrendingUp
+          imageVector = when {
+            isSteady -> Icons.Default.TrendingUp
+            isCooling -> Icons.Default.TrendingDown
+            else -> Icons.Default.TrendingUp
           },
           contentDescription = null,
-          tint = if (weather.trend3h.contains("Worsen", ignoreCase = true)) EmergencyRedBright else NeonEmerald,
+          tint = when {
+            isSteady -> TacticalOnSurfaceVariant
+            isCooling -> TacticalCyan
+            else -> WarningAmber
+          },
           modifier = Modifier.size(15.dp)
         )
       }
@@ -847,11 +894,7 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
           text = if (hasRealTrend) weather.trend3h else "No live trend data",
           fontSize = 10.sp,
           fontWeight = FontWeight.Bold,
-          color = if (hasRealTrend && weather.trend3h.contains("Worsen", ignoreCase = true)) {
-            EmergencyRedBright
-          } else {
-            TacticalOnSurfaceVariant
-          },
+          color = if (hasRealTrend) TacticalOnSurface else TacticalOnSurfaceVariant,
           maxLines = 1
         )
       }
@@ -861,8 +904,8 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
 
 // ============================================================================
 // DATA STATUS + LAYER TOGGLES + REPORT INCIDENT — compact single chip row.
-// Honest provenance: LIVE never appears while data is only cached; DEMO is
-// labeled explicitly; every toggle changes real map visibility.
+// The DATA: CACHED chip is the mock-data master toggle; every other toggle
+// changes real map visibility.
 // ============================================================================
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
@@ -870,7 +913,8 @@ private fun CompactWeatherRow(weather: WeatherMetrics) {
 private fun DisasterStatusLayerRow(
   uiState: VippattiUiState,
   onToggleLayer: (DisasterLayer) -> Unit,
-  onOpenIncidentReport: () -> Unit
+  onOpenIncidentReport: () -> Unit,
+  onToggleMockData: () -> Unit = {}
 ) {
   val statusColor = when {
     uiState.isDisasterDataLive -> NeonEmerald
@@ -885,19 +929,17 @@ private fun DisasterStatusLayerRow(
     contentPadding = PaddingValues(horizontal = 10.dp),
     horizontalArrangement = Arrangement.spacedBy(6.dp)
   ) {
-    // Aggregate provider status chip (LIVE/CACHED/STALE/UNAVAILABLE — honest).
+    // Mock-data master toggle: the DATA: CACHED button.
+    // ON  -> every mock danger + safe zone appears.
+    // OFF -> the map goes EMPTY.
+    // All mock coordinates are India-only.
     item {
       StatusChip(
-        text = "DATA: ${uiState.disasterDataStatusLabel}",
-        color = statusColor,
-        testTag = "disaster_data_status_chip"
+        text = if (uiState.isMockDataVisible) "DATA: CACHED • SIMULATED ON" else "DATA: CACHED • SIMULATED OFF",
+        color = if (uiState.isMockDataVisible) statusColor else TacticalOnSurfaceVariant,
+        testTag = "disaster_data_status_chip",
+        onClick = onToggleMockData
       )
-    }
-    // Explicit DEMO chip — demo data can never masquerade as live.
-    if (uiState.isDemoMode) {
-      item {
-        StatusChip(text = "DEMO DATA ON", color = WarningAmber, testTag = "demo_mode_chip")
-      }
     }
     // Layer toggles — only layers the providers/data model actually support.
     listOf(
@@ -956,12 +998,53 @@ private fun DisasterStatusLayerRow(
 }
 
 @Composable
-private fun StatusChip(text: String, color: Color, testTag: String) {
+private fun DisasterTypeLegend(types: List<com.example.data.model.HazardType>) {
+  if (types.isEmpty()) return
+  LazyRow(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(vertical = 2.dp),
+    contentPadding = PaddingValues(horizontal = 10.dp),
+    horizontalArrangement = Arrangement.spacedBy(6.dp)
+  ) {
+    items(types, key = { it.name }) { type ->
+      val swatch = Color(com.example.data.disaster.DisasterTypeColors.argbFor(type))
+      Row(
+        modifier = Modifier
+          .clip(RoundedCornerShape(999.dp))
+          .background(ObsidianContainer.copy(alpha = 0.9f))
+          .border(1.dp, swatch.copy(alpha = 0.7f), RoundedCornerShape(999.dp))
+          .padding(horizontal = 8.dp, vertical = 4.dp)
+          .testTag("legend_${type.name.lowercase()}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+      ) {
+        Box(
+          modifier = Modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .background(swatch)
+        )
+        Text(
+          text = type.label,
+          fontSize = 9.sp,
+          fontWeight = FontWeight.Bold,
+          color = TacticalOnSurface,
+          maxLines = 1
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun StatusChip(text: String, color: Color, testTag: String, onClick: (() -> Unit)? = null) {
   Box(
     modifier = Modifier
       .clip(RoundedCornerShape(999.dp))
       .background(ObsidianContainer.copy(alpha = 0.9f))
       .border(1.dp, color.copy(alpha = 0.6f), RoundedCornerShape(999.dp))
+      .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
       .padding(horizontal = 10.dp, vertical = 5.dp)
       .testTag(testTag)
   ) {
@@ -983,12 +1066,20 @@ private fun WeatherCell(
   tint: Color,
   modifier: Modifier = Modifier
 ) {
+  // Blank value = no live feed for this metric. Show the em-dash placeholder
+  // and mute the tint rather than rendering an empty gap that reads as a bug.
+  val hasValue = value.isNotBlank()
   Row(
     modifier = modifier,
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(5.dp)
   ) {
-    Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(15.dp))
+    Icon(
+      imageVector = icon,
+      contentDescription = null,
+      tint = if (hasValue) tint else TacticalOnSurfaceVariant,
+      modifier = Modifier.size(15.dp)
+    )
     Column {
       Text(
         text = label,
@@ -998,10 +1089,10 @@ private fun WeatherCell(
         letterSpacing = 0.5.sp
       )
       Text(
-        text = value,
+        text = if (hasValue) value else "—",
         fontSize = 10.sp,
         fontWeight = FontWeight.Bold,
-        color = TacticalOnSurface,
+        color = if (hasValue) TacticalOnSurface else TacticalOnSurfaceVariant,
         maxLines = 1
       )
     }
@@ -1013,12 +1104,17 @@ private fun WeatherCell(
 // ============================================================================
 
 @Composable
-private fun riskColor(level: RiskLevel?): Color = when (level) {
-  RiskLevel.RED -> EmergencyRedBright
-  RiskLevel.ORANGE -> WarningAmber
-  RiskLevel.YELLOW -> Color(0xFFFDD835) // semantic risk-yellow, constant on both themes
-  RiskLevel.GREEN -> NeonEmerald
-  null -> TacticalOnSurfaceVariant
+private fun riskColor(level: RiskLevel?): Color {
+  // Risk-yellow must stay readable on BOTH themes: bright yellow on dark
+  // surfaces, deep amber text on light surfaces (yellow-on-white is invisible).
+  val onLight = LocalVippattiColors.current.obsidianSurface.luminance() > 0.5f
+  return when (level) {
+    RiskLevel.RED -> EmergencyRedBright
+    RiskLevel.ORANGE -> WarningAmber
+    RiskLevel.YELLOW -> if (onLight) Color(0xFF7A5C00) else Color(0xFFFDD835)
+    RiskLevel.GREEN -> NeonEmerald
+    null -> TacticalOnSurfaceVariant
+  }
 }
 
 @Composable

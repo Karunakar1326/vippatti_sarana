@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
@@ -365,9 +366,15 @@ fun DispatchesScreen(
       }
     }
 
-    // 4. Horizontal Filter Chips
+    // 4. Horizontal Filter Chips — only chips with matching articles show,
+    // so every visible chip is productive (no dead "Weather Radar" buttons).
     item {
-      val categories = listOf("All", "Severe Alerts", "Weather Radar", "Shelter Updates", "Government Bulletins")
+      val categories = NewsPresentation.filterChipLabels(uiState.newsArticles)
+      val selectedCategory = if (uiState.selectedNewsCategory in categories) {
+        uiState.selectedNewsCategory
+      } else {
+        "All"
+      }
       LazyRow(
         modifier = Modifier
           .fillMaxWidth()
@@ -376,7 +383,7 @@ fun DispatchesScreen(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp)
       ) {
         items(categories) { cat ->
-          val isSelected = uiState.selectedNewsCategory == cat
+          val isSelected = selectedCategory == cat
           Row(
             modifier = Modifier
               .clip(RoundedCornerShape(8.dp))
@@ -747,11 +754,16 @@ fun DispatchesScreen(
     }
 
     // 7. Feed Cards — REAL GNews articles mapped to dispatch cards
-    val visibleArticles = if (uiState.selectedNewsCategory == "All") {
+    val activeCategory = if (uiState.selectedNewsCategory in NewsPresentation.filterChipLabels(uiState.newsArticles)) {
+      uiState.selectedNewsCategory
+    } else {
+      "All"
+    }
+    val visibleArticles = if (activeCategory == "All") {
       uiState.newsArticles
     } else {
       uiState.newsArticles.filter { article ->
-        NewsPresentation.matchesCategory(article.category, uiState.selectedNewsCategory)
+        NewsPresentation.matchesCategory(article.category, activeCategory)
       }
     }
     val filteredDispatches = NewsPresentation.toFeedDispatches(visibleArticles, System.currentTimeMillis())
@@ -777,8 +789,8 @@ fun DispatchesScreen(
             Text(
               text = when {
                 uiState.isSyncing -> "Fetching live disaster news…"
-                uiState.selectedNewsCategory != "All" ->
-                  "No articles match \"${uiState.selectedNewsCategory}\" right now — switch to All or tap Sync."
+                activeCategory != "All" ->
+                  "No articles match \"$activeCategory\" right now — switch to All or tap Sync."
                 uiState.newsError != null -> uiState.newsError.userMessage
                 uiState.newsEverLoaded -> "Live feed returned no new articles — try again later."
                 else -> "No disaster news loaded yet — tap Sync to fetch live GNews articles."
@@ -798,7 +810,11 @@ fun DispatchesScreen(
         dispatch = dispatch,
         onActionClick = {
           dispatch.url?.let { url ->
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            try {
+              context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            } catch (e: Exception) {
+              Toast.makeText(context, "Cannot open article: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
           } ?: onNavigateTab(ScreenTab.INSTRUCTIONS)
         }
       )

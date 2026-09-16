@@ -729,7 +729,10 @@ private fun DisasterRiskBadge(riskLevel: RiskLevel?) {
       fontWeight = FontWeight.Black,
       color = when (riskLevel) {
         RiskLevel.RED, RiskLevel.ORANGE -> Color.White
-        RiskLevel.YELLOW, RiskLevel.GREEN -> OnNeonEmerald
+        // Near-black on the amber fill — readable in BOTH themes (the old
+        // theme-aware value vanished on amber in dark mode and light mode).
+        RiskLevel.YELLOW -> Color(0xFF201500)
+        RiskLevel.GREEN -> OnNeonEmerald
         null -> TacticalOnSurfaceVariant
       },
       letterSpacing = 0.4.sp,

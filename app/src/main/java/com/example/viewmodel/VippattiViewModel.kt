@@ -22,11 +22,13 @@ import com.example.data.news.NewsError
 import com.example.data.news.NewsFeed
 import com.example.data.news.NewsRepository
 import com.example.data.news.NewsTtsBulletin
+import com.example.data.weather.OpenMeteoWeatherService
 import com.example.data.model.GeoMath
 import com.example.data.model.HazardSeverity
 import com.example.data.model.HazardZone
 import com.example.data.model.SafeZone
 import com.example.data.routing.GeoPoint
+import com.example.data.routing.LiveRouteCache
 import com.example.data.routing.OsrmRoutingService
 import com.example.data.routing.RouteResult
 import com.example.data.risk.ActionAdvisor
@@ -128,6 +130,8 @@ data class VippattiUiState(
   val isSubmittingReport: Boolean = false,
   val lastReportReceipt: ReportReceipt? = null,
   val weather: WeatherMetrics = WeatherMetrics(),
+  /** True once a live Open-Meteo reading lands; false while weather is empty. */
+  val isWeatherLive: Boolean = false,
   val snackbarMessage: String? = null,
 
   // --- Location (REAL GPS preferred; India-centre view until a fix arrives) ---
@@ -158,8 +162,14 @@ data class VippattiUiState(
     DisasterLayer.USER_REPORTS, DisasterLayer.SAFE_ZONES,
     DisasterLayer.EVACUATION_ROUTE, DisasterLayer.MY_LOCATION
   ),
-  /** Explicit DEMO MODE — clearly-labeled pilot/simulated data. Off by default. */
-  val isDemoMode: Boolean = false,
+  /** Mock-data compat flag — mirrors the radar "DATA: CACHED" toggle. */
+  val isMockMode: Boolean = true,
+  /**
+   * MOCK DATA visibility — the radar "DATA: CACHED" toggle. ON (default) shows
+   * the India multi-state mock network (danger + safe zones); OFF leaves the
+   * map EMPTY (no mock, live or report zones reach the map or any engine).
+   */
+  val isMockDataVisible: Boolean = true,
   /** Citizen-submitted incident reports (unverified, TTL'd). */
   val userIncidentReports: List<IncidentReport> = emptyList(),
   /** Selected disaster event for the tap detail panel. */
@@ -197,7 +207,7 @@ data class VippattiUiState(
 ) {
 
   // --- Derived broadcast labels (REAL battery/GPS/relays - no hardcoded 84%) ---
-  /** Live device battery reading for SOS/report payloads - replaces the demo 84%. */
+  /** Live device battery reading for SOS/report payloads. */
   val batteryLabel: String
     get() = batteryPercent?.let { percent ->
       "$percent%" + if (isBatteryCharging) " (Charging)" else " (Discharging)"
@@ -260,7 +270,7 @@ data class VippattiUiState(
 }
 
 class VippattiViewModel(
-  /** Emergency report gateway — NDRF pilot simulation by default, swappable. */
+  /** Emergency report gateway — NDRF relay by default, swappable. */
   private val reportService: EmergencyReportService = NdrfEmergencyReportService(),
   /**
    * Real GNews disaster-news cache — file-backed in production (MainActivity
@@ -310,9 +320,13 @@ class VippattiViewModel(
   private var routingJob: Job? = null
   private var newsJob: Job? = null
   private var disasterJob: Job? = null
+  private var weatherJob: Job? = null
 
   /** Location the current/last route was computed from — guards GPS re-routing. */
   private var lastRouteOrigin: GeoPoint? = null
+
+  /** Live road routes by destination/mode/origin-grid/hazards — instant exact roads on repeat views. */
+  private val liveRouteCache = LiveRouteCache()
 
   init {
     // Cold start: run the intelligence pipeline once on the India-centre view
@@ -330,6 +344,25 @@ class VippattiViewModel(
     // Cold start of the REAL GNews pipeline: a fresh cache (< 30 min) serves
     // instantly (offline survival + quota protection); otherwise it fetches.
     newsJob = viewModelScope.launch { applyNewsFeed(newsRepository.ensureLoaded()) }
+    // Cold start of LIVE weather (Open-Meteo, keyless) for the radar bar.
+    refreshWeather()
+  }
+
+  /**
+   * Pulls LIVE temperature / rainfall / wind + 3-hour trend for the current
+   * map location. Offline or API failure keeps the previous reading (or the
+   * honest empty state on first run) — weather is never invented.
+   */
+  fun refreshWeather() {
+    weatherJob?.cancel()
+    weatherJob = viewModelScope.launch {
+      val live = OpenMeteoWeatherService.fetchNow(_uiState.value.userLocation)
+      if (live != null) {
+        _uiState.update { it.copy(weather = live, isWeatherLive = true) }
+      } else if (_uiState.value.weather == WeatherMetrics()) {
+        _uiState.update { it.copy(isWeatherLive = false) }
+      }
+    }
   }
 
   // ============================================================ INTELLIGENCE
@@ -337,7 +370,7 @@ class VippattiViewModel(
   /**
    * The heart of the decision pipeline:
    * GPS/India-centre location -> hazard analysis (REAL live events + user
-   * reports + explicitly-labeled demo data) -> safe-zone discovery ->
+   * reports + explicitly-labeled mock data) -> safe-zone discovery ->
    * capacity check -> ranked options -> personal risk -> recommended action ->
    * relocation plan -> evacuation route.
    */
@@ -346,37 +379,41 @@ class VippattiViewModel(
     val location = state.userLocation
     val now = System.currentTimeMillis()
 
-    // Hazard picture assembly — LIVE data first, never silently mixed:
-    //   1. REAL provider events (normalized to HazardZone for every engine).
-    //   2. Unverified user incident reports (TTL-expired ones drop out).
-    //   3. DEMO MODE pilot zones — ONLY when the user explicitly enabled it.
-    val liveZones = toHazardZones(
-      state.disasterEvents.filter { it.isValid(now) }
-    )
-    val reportZones = toHazardZones(
-      state.userIncidentReports
-        .map { it.toDisasterEvent(now) }
-        .filter { it.isValid(now) }
-    )
-    val demoZones = if (state.isDemoMode) PilotRegionData.hazardZones else emptyList()
-    val hazards = (liveZones + reportZones + demoZones).distinctBy { it.id }
+    // Hazard picture assembly. Mock toggle OFF means a FULLY EMPTY map:
+    // no mock, no live and no user-report zones reach the map or any engine.
+    // Toggle ON shows live + reports + the India mock network (India-only
+    // guarded so a record outside IndiaGeo never reaches the map).
+    val hazards = if (!state.isMockDataVisible) {
+      emptyList()
+    } else {
+      val liveZones = toHazardZones(
+        state.disasterEvents.filter { it.isValid(now) }
+      )
+      val reportZones = toHazardZones(
+        state.userIncidentReports
+          .map { it.toDisasterEvent(now) }
+          .filter { it.isValid(now) }
+      )
+      val mockZones = PilotRegionData.hazardZones.filter { IndiaGeo.contains(it.center) }
+      (liveZones + reportZones + mockZones).distinctBy { it.id }
+    }
 
     val zones = state.safeZones
-    // Safe zones exist ONLY in the pilot coverage area; outside it, ranking
-    // simply yields no feasible shelter (honest empty state), never a fake
-    // nationwide shelter list.
-    val zonesInScope = if (state.isDemoMode || IndiaGeo.isWithinPilotCoverage(location)) {
-      zones
+    // Mock safe zones exist ONLY while the toggle is ON; OFF clears the whole
+    // mock shelter network (carousel empties honestly). India-only filter
+    // applies to every mock shelter as well.
+    val zonesInScope = if (!state.isMockDataVisible) {
+      emptyList()
     } else {
-      zones.filter { IndiaGeo.isWithinPilotCoverage(it.point) }
+      zones.filter { IndiaGeo.contains(it.point) }
     }
 
     val risk = RiskAssessmentEngine.assess(
       location = location,
       hazards = hazards,
       provenanceNote = when {
-        state.isDemoMode ->
-          "Location: ${if (state.isUserLocationFallback) "India centre (no GPS)" else "device GPS"} • Demo mode: labeled pilot hazards shown"
+        state.isMockMode ->
+          "Location: ${if (state.isUserLocationFallback) "India centre (no GPS)" else "device GPS"} • Simulated mode: labeled India-network hazards shown"
         state.isUserLocationFallback ->
           "Location: India centre (no GPS yet) • Hazards: live provider feeds"
         else ->
@@ -403,13 +440,23 @@ class VippattiViewModel(
     )
 
     _uiState.update {
+      val selectedStillVisible = it.selectedSafeZone?.let { sel ->
+        zonesInScope.any { z -> z.id == sel.id }
+      } ?: true
+      // Hiding mock data invalidates any mock destination + its corridor —
+      // the map must never keep routing to a zone that just disappeared.
       it.copy(
         personalRisk = risk,
         hazardZones = hazards,
         evaluatedShelters = evaluated,
         rankedShelters = ranked,
         recommendedAction = action,
-        relocationPlan = plan
+        relocationPlan = plan,
+        selectedSafeZone = if (selectedStillVisible) it.selectedSafeZone else null,
+        selectedEvaluation = if (selectedStillVisible) it.selectedEvaluation else null,
+        activeRoute = if (selectedStillVisible) it.activeRoute else null,
+        alternativeRoutes = if (selectedStillVisible) it.alternativeRoutes else emptyList(),
+        isNavigatingLive = if (selectedStillVisible) it.isNavigatingLive else false
       )
     }
 
@@ -437,6 +484,7 @@ class VippattiViewModel(
       }
       recomputeIntelligence()
       maybeRecalculateRouteForNewLocation()
+      refreshWeather()
     }
   }
 
@@ -483,18 +531,40 @@ class VippattiViewModel(
   }
 
   /**
-   * Explicit DEMO MODE toggle. ON -> the labeled Idukki pilot dataset is
-   * shown for demonstration and every demo hazard stays provenance-labeled.
-   * OFF -> only REAL provider data and user reports remain.
+   * Mock-data master switch. ON -> the labeled India mock network is shown
+   * and every mock hazard stays provenance-labeled. OFF -> the map goes
+   * EMPTY (no mock, live or report zone reaches the map or any engine).
+   * Kept in sync with the radar "DATA: CACHED" toggle (same dataset).
    */
-  fun setDemoMode(enabled: Boolean) {
+  fun setMockMode(enabled: Boolean) {
     _uiState.update {
       it.copy(
-        isDemoMode = enabled,
+        isMockMode = enabled,
+        isMockDataVisible = enabled,
         snackbarMessage = if (enabled) {
-          "Demo mode ON — labeled pilot data for demonstration. Live provider data continues in parallel."
+          "Simulated data ON — India danger + safe zones visible"
         } else {
-          "Demo mode OFF — showing live provider data and user reports only."
+          "Simulated data OFF — map cleared"
+        }
+      )
+    }
+    recomputeIntelligence()
+  }
+
+  /**
+   * Radar "DATA: CACHED" mock toggle: ON shows ALL mock danger + safe zones;
+   * OFF leaves the map EMPTY. Single source of truth for mock visibility.
+   */
+  fun toggleMockData() {
+    val next = !_uiState.value.isMockDataVisible
+    _uiState.update {
+      it.copy(
+        isMockDataVisible = next,
+        isMockMode = next,
+        snackbarMessage = if (next) {
+          "Simulated data ON — India danger + safe zones visible"
+        } else {
+          "Simulated data OFF — map cleared"
         }
       )
     }
@@ -598,53 +668,128 @@ class VippattiViewModel(
     if (autoRoute) calculateRouteToSelectedZone()
   }
 
+  /**
+   * Instant corridor first, live road route as an upgrade:
+   *  1. A cached live road route (same shelter/mode/area/hazards) paints the
+   *     EXACT road pathway immediately with no straight-line flash at all.
+   *  2. Otherwise the offline hazard-skirting corridor draws instantly as a
+   *     DASHED preview (never mistaken for surveyed roads).
+   *  3. The live OSRM road pathway swaps in when it arrives — the badge
+   *     flips OFFLINE EST. -> OSRM VALIDATED.
+   * Stale results (newer selection, cleared route, hidden mock) never
+   * overwrite current state: the upgrade applies only to the zone + origin
+   * this call was made for.
+   */
   fun calculateRouteToSelectedZone() {
     val zone = _uiState.value.selectedSafeZone ?: return
     routingJob?.cancel()
-    lastRouteOrigin = _uiState.value.userLocation
-    routingJob = viewModelScope.launch {
-      _uiState.update { it.copy(isCalculatingRoute = true) }
-      val result = OsrmRoutingService.calculateRoute(
-        origin = _uiState.value.userLocation,
-        destination = zone.point,
-        mode = _uiState.value.travelMode,
-        hazards = _uiState.value.hazardZones,
-        destinationName = zone.name
+    val origin = _uiState.value.userLocation
+    val mode = _uiState.value.travelMode
+    val hazards = _uiState.value.hazardZones
+    lastRouteOrigin = origin
+    val cacheKey = LiveRouteCache.key(zone.id, mode, origin, hazards)
+    _uiState.update {
+      it.copy(
+        isCalculatingRoute = false,
+        activeRoute = liveRouteCache.get(cacheKey)
+          ?: OsrmRoutingService.calculateOfflineTacticalRoute(
+            origin = origin,
+            destination = zone.point,
+            mode = mode,
+            hazards = hazards,
+            destinationName = zone.name
+          ),
+        currentNavigationStepIndex = 0
       )
-      _uiState.update {
-        it.copy(
-          isCalculatingRoute = false,
-          activeRoute = result,
-          currentNavigationStepIndex = 0
-        )
+    }
+    routingJob = viewModelScope.launch {
+      val live = OsrmRoutingService.fetchLiveRoutesAsync(
+        origin = origin,
+        destination = zone.point,
+        mode = mode,
+        hazards = hazards,
+        destinationName = zone.name,
+        wantAlternatives = 1
+      ).firstOrNull()
+      if (live != null &&
+        lastRouteOrigin == origin &&
+        _uiState.value.selectedSafeZone?.id == zone.id
+      ) {
+        liveRouteCache.put(cacheKey, live)
+        _uiState.update {
+          it.copy(
+            activeRoute = live,
+            currentNavigationStepIndex = 0
+          )
+        }
       }
     }
   }
 
   /**
    * Computes alternative corridors to the selected shelter so the user can
-   * compare safety vs distance.
+   * compare safety vs distance. Never silently dead: with no destination yet
+   * it auto-selects the best-ranked shelter first, and with no feasible
+   * shelter at all it says so instead of doing nothing.
    */
   fun loadAlternativeRoutes() {
-    val zone = _uiState.value.selectedSafeZone ?: return
+    var zone = _uiState.value.selectedSafeZone
+    if (zone == null) {
+      val best = _uiState.value.rankedShelters.firstOrNull()
+      if (best == null) {
+        _uiState.update {
+          it.copy(snackbarMessage = "No safe zone to route to — tap DATA: CACHED to show India zones, then pick a green shelter")
+        }
+        return
+      }
+      selectSafeZone(best.zone, autoRoute = false)
+      zone = best.zone
+    }
+    val target = zone
     routingJob?.cancel()
-    lastRouteOrigin = _uiState.value.userLocation
+    val origin = _uiState.value.userLocation
+    val mode = _uiState.value.travelMode
+    val hazards = _uiState.value.hazardZones
+    lastRouteOrigin = origin
+    // Instant corridor first so the button always answers immediately; the
+    // live road corridors swap in below with the same staleness guards.
+    _uiState.update {
+      it.copy(
+        isCalculatingRoute = false,
+        activeRoute = OsrmRoutingService.calculateOfflineTacticalRoute(
+          origin = origin,
+          destination = target.point,
+          mode = mode,
+          hazards = hazards,
+          destinationName = target.name
+        ),
+        alternativeRoutes = emptyList(),
+        currentNavigationStepIndex = 0
+      )
+    }
     routingJob = viewModelScope.launch {
-      _uiState.update { it.copy(isCalculatingRoute = true) }
       val alternatives = OsrmRoutingService.calculateAlternativeRoutes(
-        origin = _uiState.value.userLocation,
-        destination = zone.point,
-        mode = _uiState.value.travelMode,
-        hazards = _uiState.value.hazardZones,
-        destinationName = zone.name,
+        origin = origin,
+        destination = target.point,
+        mode = mode,
+        hazards = hazards,
+        destinationName = target.name,
         maxAlternatives = 2
       )
-      _uiState.update {
-        it.copy(
-          isCalculatingRoute = false,
-          activeRoute = alternatives.firstOrNull() ?: it.activeRoute,
-          alternativeRoutes = alternatives
-        )
+      if (lastRouteOrigin == origin &&
+        _uiState.value.selectedSafeZone?.id == target.id
+      ) {
+        _uiState.update {
+          it.copy(
+            activeRoute = alternatives.firstOrNull() ?: it.activeRoute,
+            alternativeRoutes = alternatives,
+            snackbarMessage = if (alternatives.size > 1) {
+              "${alternatives.size} corridors to ${target.name} — safest shown first"
+            } else {
+              "Only one corridor found to ${target.name}"
+            }
+          )
+        }
       }
     }
   }
@@ -683,7 +828,13 @@ class VippattiViewModel(
    * (NOT simply the nearest) and routes to it.
    */
   fun selectBestSafeZone() {
-    val best = _uiState.value.rankedShelters.firstOrNull() ?: return
+    val best = _uiState.value.rankedShelters.firstOrNull()
+    if (best == null) {
+      _uiState.update {
+        it.copy(snackbarMessage = "No feasible shelter right now — tap DATA: CACHED to show India zones")
+      }
+      return
+    }
     selectSafeZone(best.zone, autoRoute = true)
     _uiState.update {
       it.copy(snackbarMessage = "Best safe zone selected: ${best.zone.name} — ${best.rankExplanation}")
@@ -693,12 +844,24 @@ class VippattiViewModel(
   // =========================================================== NAVIGATION
 
   fun startEvacuationRoute() {
-    val zone = _uiState.value.selectedSafeZone ?: return
+    var zone = _uiState.value.selectedSafeZone
+    if (zone == null) {
+      val best = _uiState.value.rankedShelters.firstOrNull()
+      if (best == null) {
+        _uiState.update {
+          it.copy(snackbarMessage = "No safe zone to route to — tap DATA: CACHED to show India zones, then pick a green shelter")
+        }
+        return
+      }
+      selectSafeZone(best.zone, autoRoute = false)
+      zone = best.zone
+    }
+    val target = zone
     _uiState.update {
       it.copy(
         isNavigatingLive = true,
         currentTab = ScreenTab.RADAR_MAP,
-        snackbarMessage = "Live guidance to ${zone.name} started"
+        snackbarMessage = "Live guidance to ${target.name} started"
       )
     }
     if (_uiState.value.activeRoute == null) {
@@ -756,6 +919,7 @@ class VippattiViewModel(
    */
   fun syncData() {
     syncDisasterData()
+    refreshWeather()
     newsJob?.cancel()
     newsJob = viewModelScope.launch {
       _uiState.update { it.copy(isSyncing = true) }
@@ -768,7 +932,7 @@ class VippattiViewModel(
             feed.articles.isNotEmpty() && feed.error == null ->
               "Disaster intelligence refreshed — ${feed.articles.size} live GNews articles"
             feed.error != null -> feed.error.userMessage
-            else -> "No GNews articles matched the pilot queries — try again later"
+            else -> "No GNews articles matched the search queries — try again later"
           }
         )
       }

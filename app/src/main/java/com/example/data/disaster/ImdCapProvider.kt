@@ -4,6 +4,9 @@ import android.util.Xml
 import com.example.data.model.HazardSeverity
 import com.example.data.routing.GeoPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -44,10 +47,12 @@ class ImdCapProvider(
     try {
       val rssBody = fetchText(RSS_URL) ?: return@withContext offlineFailure()
       val links = CapRssParser.parseItemLinks(rssBody).take(MAX_ALERTS)
-      val events = mutableListOf<DisasterEvent>()
-      for (link in links) {
-        val capBody = fetchText(link) ?: continue
-        CapAlertParser.parse(capBody, link)?.let { events.add(it) }
+      // Fetch the up-to-8 CAP alert documents in parallel so the provider
+      // waits for ONE slow link instead of the sum off all timeouts.
+      val events = coroutineScope {
+        links.map { link -> async { link to fetchText(link) } }
+          .awaitAll()
+          .mapNotNull { (link, body) -> body?.let { CapAlertParser.parse(it, link) } }
       }
       ProviderResult.Success(events, System.currentTimeMillis())
     } catch (e: IOException) {
