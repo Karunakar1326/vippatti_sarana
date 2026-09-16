@@ -44,6 +44,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.disaster.DisasterFileCache
+import com.example.data.disaster.ZoneDetailMapper
 import com.example.data.news.NewsFileCache
 import com.example.ui.components.AddContactDialog
 import com.example.ui.components.DisasterEventDetailDialog
@@ -107,7 +108,7 @@ fun VippattiAppRoot(
   val snackbarHostState = remember { SnackbarHostState() }
   val context = LocalContext.current
 
-  // REAL device battery level — replaces the demo "84% (Low Drain Mode)".
+  // REAL device battery level.
   // Sticky ACTION_BATTERY_CHANGED broadcast gives an immediate reading.
   DisposableEffect(Unit) {
     val receiver = object : BroadcastReceiver() {
@@ -287,7 +288,7 @@ fun VippattiAppRoot(
             onLoadAlternativeRoutes = { viewModel.loadAlternativeRoutes() },
             onOpenSensorBroadcast = { viewModel.triggerSosBroadcast() },
             onClearRoute = { viewModel.clearActiveRoute() },
-            // REAL hardware GPS fixes replace the static pilot location (Painavu, Idukki, Kerala, India).
+            // REAL hardware GPS fixes replace the India-centre fallback location.
             onRealGpsFix = { lat, lon -> viewModel.applyRealGpsFix(lat, lon) },
             onOpenHazardDetail = { viewModel.openHazardDetail(it) },
             onOpenSafeZoneDetail = { viewModel.openSafeZoneDetail(it) },
@@ -298,7 +299,8 @@ fun VippattiAppRoot(
               viewModel.submitIncidentReport(category, severity, description)
             },
             onOpenDisasterEventDetail = { viewModel.openDisasterEventDetail(it) },
-            onDismissDisasterEventDetail = { viewModel.closeDisasterEventDetail() }
+            onDismissDisasterEventDetail = { viewModel.closeDisasterEventDetail() },
+            onToggleMockData = { viewModel.toggleMockData() }
           )
 
           ScreenTab.INSTRUCTIONS -> InstructionsScreen(
@@ -396,8 +398,21 @@ fun VippattiAppRoot(
       }
 
       uiState.hazardDetailZone?.let { hazard ->
+        // Disaster-aware detail flow: tapped zone -> linked backend event
+        // (live provider / citizen report; null for mock-network zones) +
+        // live viable shelters -> per-type mapped detail for the popup.
+        val sourceEvent = ZoneDetailMapper.findSourceEvent(
+          zone = hazard,
+          providerEvents = uiState.disasterEvents,
+          reportEvents = uiState.userIncidentReports.map { it.toDisasterEvent() }
+        )
         HazardZoneDetailDialog(
           zone = hazard,
+          detail = ZoneDetailMapper.map(
+            zone = hazard,
+            event = sourceEvent,
+            feasibleSafeZones = uiState.rankedShelters.map { it.zone }
+          ),
           onDismiss = { viewModel.closeHazardDetail() }
         )
       }

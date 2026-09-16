@@ -176,6 +176,31 @@ data class DisasterEvent(
 }
 
 /**
+ * One color per disaster type — the map's visual vocabulary. Every danger
+ * zone on the radar renders in its disaster's color (flood blue, fire
+ * orange, cyclone purple ...), so the type reads directly off the zone
+ * itself. A legend row above the map keys each color to its disaster.
+ * Opaque ARGB ints shared by the osmdroid engine and the Compose legend.
+ */
+object DisasterTypeColors {
+
+  fun argbFor(type: HazardType): Int = when (type) {
+    HazardType.FLOOD -> 0xFF2196F3.toInt() // river blue
+    HazardType.HEAVY_RAINFALL -> 0xFF00BCD4.toInt() // rain cyan
+    HazardType.LANDSLIDE -> 0xFF8D6E63.toInt() // earth brown
+    HazardType.EARTHQUAKE -> 0xFFFF5722.toInt() // seismic deep-orange
+    HazardType.CYCLONE -> 0xFFAB47BC.toInt() // storm purple
+    HazardType.FIRE -> 0xFFFF9800.toInt() // fire orange
+    HazardType.WEATHER_ALERT -> 0xFFFFCA28.toInt() // alert yellow
+    HazardType.OTHER -> 0xFF78909C.toInt() // slate grey
+  }
+
+  /** Every type maps to a distinct color (legend must never repeat a swatch). */
+  fun allDistinct(): Boolean =
+    HazardType.entries.map { argbFor(it) }.toSet().size == HazardType.entries.size
+}
+
+/**
  * India geographic constants and membership tests (pure Kotlin, testable).
  * Used for India-wide bounding-box provider queries and client-side filters.
  */
@@ -228,7 +253,7 @@ object IndiaGeo {
  * Converts a normalized [DisasterEvent] into the existing [HazardZone] shape
  * so the risk engine, safe-zone evaluator and OSRM hazard routing keep working
  * unchanged. Zones derived here always carry the LIVE/observed provenance of
- * their source, never pilot-simulation labels.
+ * their source, never mock-network labels.
  */
 object DisasterEventNormalizer {
 
@@ -255,7 +280,9 @@ object DisasterEventNormalizer {
   private fun polygonZone(event: DisasterEvent, ring: List<GeoPoint>): HazardZone? {
     if (ring.size < 3) return null
     val centroid = GeoPoint(ring.sumOf { it.lat } / ring.size, ring.sumOf { it.lon } / ring.size)
-    // Circumradius covers the polygon extent for radius-based hazard checks.
+    // Circumradius covers the polygon extent for radius-based hazard checks,
+    // CAPPED so a district-size alert polygon never renders as a giant zone
+    // that swallows neighbouring zones (map rule: no zone inside another).
     var maxDistSq = 0.0
     for (p in ring) {
       val dLat = (p.lat - centroid.lat) * 111_320.0
@@ -263,7 +290,8 @@ object DisasterEventNormalizer {
         kotlin.math.cos(Math.toRadians(centroid.lat))
       maxDistSq = max(maxDistSq, dLat * dLat + dLon * dLon)
     }
-    val radius = kotlin.math.sqrt(maxDistSq).coerceAtLeast(MIN_ZONE_RADIUS_METERS)
+    val radius = kotlin.math.sqrt(maxDistSq)
+      .coerceIn(MIN_ZONE_RADIUS_METERS, MAX_ZONE_RADIUS_METERS)
     return baseZone(event, centroid, radius)
   }
 
@@ -302,13 +330,15 @@ object DisasterEventNormalizer {
 
   /**
    * Earthquake alert radius derived from magnitude: ~2^M km (felt-area
-   * approximation), clamped to a sane band. Always labeled ESTIMATED in the
+   * approximation), CAPPED at [MAX_ZONE_RADIUS_METERS] so a strong quake
+   * never renders as a giant zone that swallows neighbouring zones
+   * (map rule: no zone inside another). Always labeled ESTIMATED in the
    * UI — it is NOT an official shake/intensity map.
    */
   fun derivedQuakeRadiusMeters(event: DisasterEvent): Double {
     val mag = (event.details as? EventDetails.Quake)?.magnitude
       ?: return DEFAULT_POINT_ZONE_RADIUS_METERS
-    val km = 2.0.pow(mag).coerceIn(5.0, 150.0)
+    val km = 2.0.pow(mag).coerceIn(3.0, MAX_ZONE_RADIUS_METERS / 1000.0)
     return km * 1000.0
   }
 
@@ -333,6 +363,12 @@ object DisasterEventNormalizer {
   const val FIRE_ZONE_RADIUS_METERS = 750.0
   const val DEFAULT_POINT_ZONE_RADIUS_METERS = 2_500.0
   const val MIN_ZONE_RADIUS_METERS = 500.0
+  /**
+   * Ceiling for ANY derived live zone radius (quake felt-area, alert-polygon
+   * circumradius): no live zone may render larger than this, so a large
+   * district alert can never swallow neighbouring zones on the map.
+   */
+  const val MAX_ZONE_RADIUS_METERS = 25_000.0
 }
 
 

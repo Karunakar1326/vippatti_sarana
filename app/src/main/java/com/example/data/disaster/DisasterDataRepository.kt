@@ -4,6 +4,9 @@ import com.example.data.model.GeoMath
 import com.example.data.model.HazardZone
 import com.example.data.routing.GeoPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
 /**
@@ -44,10 +47,10 @@ data class DisasterFeed(
  *   fetch -> validate -> dedupe (source event id) -> drop expired ->
  *   write cache -> emit; offline: serve the last valid cached shard.
  *
- * LIVE vs DEMO: the repository only ever holds REAL fetched events (plus
- * explicitly submitted user reports). Pilot/demo hazards are NEVER mixed in
- * here — they remain a separate, clearly labeled concept owned by the
- * ViewModel (Demo Mode).
+ * LIVE vs MOCK: the repository only ever holds REAL fetched events (plus
+ * explicitly submitted user reports). Mock-network hazards are NEVER mixed
+ * in here — they remain a separate, clearly labeled concept owned by the
+ * ViewModel (mock toggle).
  */
 class DisasterDataRepository(
   private val providers: List<DisasterDataProvider>,
@@ -55,13 +58,20 @@ class DisasterDataRepository(
   private val clock: () -> Long = System::currentTimeMillis
 ) {
 
-  /** Manual sync: query every provider, update cache, return the merged feed. */
+  /** Manual sync: query every provider in parallel, update cache, return the merged feed. */
   suspend fun refresh(): DisasterFeed {
     val now = clock()
+    // Fire all provider fetches concurrently — wait time = slowest provider,
+    // not the sum (USGS + NASA FIRMS + IMD each have their own client/timeouts).
+    val results = coroutineScope {
+      providers.map { provider -> async { provider.providerId to provider.fetchIndiaEvents() } }
+        .awaitAll()
+        .toMap()
+    }
     val states = mutableListOf<ProviderState>()
     val allEvents = mutableListOf<DisasterEvent>()
     for (provider in providers) {
-      when (val result = provider.fetchIndiaEvents()) {
+      when (val result = results[provider.providerId] ?: continue) {
         is ProviderResult.Success -> {
           val valid = result.events
             .filter { it.isValid(now) }

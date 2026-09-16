@@ -16,7 +16,7 @@ data class HazardExposure(
 )
 
 /**
- * Pure static hazard analysis over the pilot hazard dataset.
+ * Pure hazard analysis over the India-network hazard dataset.
  *
  * FUTURE INTEGRATION: when live feeds (IMD rainfall, KSDMA alerts, NRSC flood
  * extents, CWC river gauges, GSI landslide warnings) are connected, only the

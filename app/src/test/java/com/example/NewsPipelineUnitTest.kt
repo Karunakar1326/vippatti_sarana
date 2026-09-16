@@ -7,6 +7,7 @@ import com.example.data.news.NewsCategory
 import com.example.data.news.NewsClassifier
 import com.example.data.news.NewsError
 import com.example.data.news.NewsErrorKind
+import com.example.data.news.NewsFilter
 import com.example.data.news.NewsPresentation
 import com.example.data.news.NewsRepository
 import com.example.data.news.NewsScope
@@ -100,6 +101,21 @@ class NewsPipelineUnitTest {
       NewsClassifier.classify("Tourism season begins", ""))
   }
 
+  // -------------------------------------------------- Disaster relevance
+  @Test
+  fun `disaster filter keeps only disaster-relevant coverage`() {
+    val disaster = article("d", "Idukki flood evacuation ordered", 1L, NewsScope.MY_AREA)
+    val general = NewsArticle(
+      id = "g", title = "Film festival begins in Kochi", description = "Culture news",
+      content = "Cultural content", url = "https://example.com/film", imageUrl = null,
+      publishedAtIso = "", publishedAtMillis = 2L, language = "en",
+      sourceName = "News Corp", sourceUrl = "https://x.com", scope = NewsScope.MY_AREA,
+      category = NewsCategory.GENERAL
+    )
+    val filtered = NewsFilter.filterForDisaster(listOf(disaster, general))
+    assertEquals(listOf("d"), filtered.map { it.id })
+  }
+
   // ---------------------------------------------------- Merge / dedupe
   @Test
   fun `merge dedupes by id and title, newest first, closest scope wins ties`() {
@@ -162,6 +178,17 @@ class NewsPipelineUnitTest {
     assertTrue(NewsPresentation.matchesCategory(NewsCategory.GOVERNMENT, "Government Bulletins"))
     assertTrue(NewsPresentation.matchesCategory(NewsCategory.GENERAL, "All"))
     assertFalse(NewsPresentation.matchesCategory(NewsCategory.GENERAL, "Severe Alerts"))
+  }
+
+  @Test
+  fun `filter chips only show labels with matching articles`() {
+    val now = 1_800_000_000_000L
+    val severe = article("s", "Idukki flood evacuation ordered", now, NewsScope.MY_AREA, category = NewsCategory.SEVERE_ALERTS)
+    val weather = article("w", "IMD heavy rain forecast", now, NewsScope.MY_STATE, category = NewsCategory.WEATHER)
+    val chips = NewsPresentation.filterChipLabels(listOf(severe, weather))
+    // All is always present; Shelter/Government have no articles -> no dead chips.
+    assertEquals(listOf("All", "Severe Alerts", "Weather Radar"), chips)
+    assertEquals(listOf("All"), NewsPresentation.filterChipLabels(emptyList()))
   }
 
   // ------------------------------------------------------ TTS bulletin
@@ -253,6 +280,28 @@ class NewsPipelineUnitTest {
     assertEquals(1, feed.articles.size)
     assertEquals("c1", feed.articles[0].id)
     assertTrue(feed.isFromCache)
+  }
+
+  @Test
+  fun `repository serves past cached disaster news when no live disaster exists`() = runTest {
+    val now = 1_800_000_000_000L
+    val cache = MemoryNewsCache()
+    cache.write(
+      NewsScope.MY_AREA,
+      listOf(article("p1", "Idukki landslide relief camp", now - 3_600_000L, NewsScope.MY_AREA)),
+      now - 3_600_000L
+    )
+    val repo = NewsRepository(
+      service = FakeGNewsService(myArea = emptyList(), myState = emptyList(), india = emptyList()),
+      cache = cache,
+      apiKeyProvider = { "real-key" },
+      clock = { now }
+    )
+    val feed = repo.refresh()
+    // No live disaster anywhere -> the honest past coverage is served from cache.
+    assertEquals(listOf("p1"), feed.articles.map { it.id })
+    assertTrue(feed.isFromCache)
+    assertNull(feed.error)
   }
 
   @Test

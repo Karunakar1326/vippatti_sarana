@@ -52,19 +52,22 @@ data class GoBagItem(
   val iconName: String
 )
 
-// SIMULATION default weather readings for the India pilot (Idukki district, Kerala).
-// trend3h defaults to "" because NO live weather feed exists yet — the UI renders
-// "No live trend data" rather than fabricating a worsening/steady claim.
+// Weather readings for the India network (live Open-Meteo feed; empty until
+// the first reading lands).
+//
+// Every field defaults to EMPTY and the UI renders an explicit "no data"
+// state per cell until OpenMeteoWeatherService delivers a real reading.
+// Nothing here fabricates weather — empty means empty, not invented.
 data class WeatherMetrics(
-  val currentTemp: String = "24°C",
-  val rainfallIntensity: String = "42mm/h",
-  val windGust: String = "65km/h",
+  val currentTemp: String = "",
+  val rainfallIntensity: String = "",
+  val windGust: String = "",
   val trend3h: String = "",
-  val surgeForecast: String = "Peak reservoir discharge expected in 45 mins"
+  val surgeForecast: String = ""
 )
 
 /**
- * Static India-pilot profile data (go-bag checklist + seed kin contacts).
+ * Profile data (go-bag checklist + seed kin contacts).
  * Disaster intelligence (alerts / breaking alerts / dispatch feed) now flows
  * ONLY from the real GNews pipeline in data/news — nothing here fabricates
  * alerts, news or dispatches anymore.
