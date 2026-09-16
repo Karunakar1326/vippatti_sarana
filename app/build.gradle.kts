@@ -61,11 +61,13 @@ signingConfigs {
         keyPassword = System.getenv("KEY_PASSWORD")
     }
 
-    create("debugConfig") {
-        storeFile = file("${rootDir}/debug.keystore")
-        storePassword = "android"
-        keyAlias = "androiddebugkey"
-        keyPassword = "android"
+    if (file("${rootDir}/debug.keystore").exists()) {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 }
 
@@ -81,7 +83,11 @@ buildTypes {
     }
 
     debug {
-        signingConfig = signingConfigs.getByName("debugConfig")
+        signingConfig = if (file("${rootDir}/debug.keystore").exists()) {
+            signingConfigs.getByName("debugConfig")
+        } else {
+            signingConfigs.getByName("debug")
+        }
     }
 }
 
