@@ -49,7 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import com.example.data.UserProfile
+import com.example.data.model.UserProfile
 import com.example.data.risk.RelocationPlanner
 import com.example.ui.theme.EmergencyRedBright
 import com.example.ui.theme.NeonEmerald

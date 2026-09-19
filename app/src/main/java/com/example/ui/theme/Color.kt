@@ -53,18 +53,14 @@ data class VippattiColors(
   val emergencyRed: Color,
   val emergencyRedBright: Color,
   val emergencyRedContainer: Color,
-  val emergencyRedLightBg: Color,
   val onEmergencyRed: Color,
   val onEmergencyRedContainer: Color,
-  val emergencyRedDeep: Color,
   // Bottom navigation
   val tacticalNavBg: Color,
   val tacticalNavBorder: Color,
   val tacticalNavInactive: Color,
   // Amber warning
-  val warningAmber: Color,
-  val warningAmberContainer: Color,
-  val warningAmberText: Color
+  val warningAmber: Color
 )
 
 /** Dark theme palette — the established Vippatti Sarana tactical identity. */
@@ -92,16 +88,12 @@ val DarkVippattiColors = VippattiColors(
   emergencyRed = Color(0xFFDC2626),
   emergencyRedBright = Color(0xFFFF5449),
   emergencyRedContainer = Color(0xFF93000A),
-  emergencyRedLightBg = Color(0xFF450A0A),
   onEmergencyRed = Color(0xFF690005),
   onEmergencyRedContainer = Color(0xFFFFDAD6),
-  emergencyRedDeep = Color(0xFFBE123C),
   tacticalNavBg = Color(0xFF17362B),
   tacticalNavBorder = Color(0xFF204B3D),
   tacticalNavInactive = Color(0xFF8DCEB8),
-  warningAmber = Color(0xFFF59E0B),
-  warningAmberContainer = Color(0xFF78350F),
-  warningAmberText = Color(0xFFFCD34D)
+  warningAmber = Color(0xFFF59E0B)
 )
 
 /**
@@ -133,16 +125,12 @@ val LightVippattiColors = VippattiColors(
   emergencyRed = Color(0xFFDC2626),
   emergencyRedBright = Color(0xFFD92D20),
   emergencyRedContainer = Color(0xFFFDE4E1),
-  emergencyRedLightBg = Color(0xFFFEECEA),
   onEmergencyRed = Color(0xFFFFFFFF),
   onEmergencyRedContainer = Color(0xFFA80011),
-  emergencyRedDeep = Color(0xFF9F1239),
   tacticalNavBg = Color(0xFFF6FAF7),
   tacticalNavBorder = Color(0xFFD3EBDD),
   tacticalNavInactive = Color(0xFF5F7A6C),
-  warningAmber = Color(0xFFD97706),
-  warningAmberContainer = Color(0xFFFEF3C7),
-  warningAmberText = Color(0xFF92400E)
+  warningAmber = Color(0xFFD97706)
 )
 
 // ============================================================================
@@ -164,7 +152,6 @@ val OnTacticalCyan: Color @Composable get() = LocalVippattiColors.current.onTact
 val OnTacticalCyanContainer: Color @Composable get() = LocalVippattiColors.current.onTacticalCyanContainer
 
 // Surface elevation ramp
-val ObsidianBg: Color @Composable get() = LocalVippattiColors.current.obsidianBg
 val ObsidianSurface: Color @Composable get() = LocalVippattiColors.current.obsidianSurface
 val ObsidianContainerLowest: Color @Composable get() = LocalVippattiColors.current.obsidianContainerLowest
 val ObsidianContainerLow: Color @Composable get() = LocalVippattiColors.current.obsidianContainerLow
@@ -183,10 +170,8 @@ val TacticalOutlineVariant: Color @Composable get() = LocalVippattiColors.curren
 val EmergencyRed: Color @Composable get() = LocalVippattiColors.current.emergencyRed
 val EmergencyRedBright: Color @Composable get() = LocalVippattiColors.current.emergencyRedBright
 val EmergencyRedContainer: Color @Composable get() = LocalVippattiColors.current.emergencyRedContainer
-val EmergencyRedLightBg: Color @Composable get() = LocalVippattiColors.current.emergencyRedLightBg
 val OnEmergencyRed: Color @Composable get() = LocalVippattiColors.current.onEmergencyRed
 val OnEmergencyRedContainer: Color @Composable get() = LocalVippattiColors.current.onEmergencyRedContainer
-val EmergencyRedDeep: Color @Composable get() = LocalVippattiColors.current.emergencyRedDeep
 
 // Bottom navigation
 val TacticalNavBg: Color @Composable get() = LocalVippattiColors.current.tacticalNavBg
@@ -195,5 +180,3 @@ val TacticalNavInactive: Color @Composable get() = LocalVippattiColors.current.t
 
 // Amber warning
 val WarningAmber: Color @Composable get() = LocalVippattiColors.current.warningAmber
-val WarningAmberContainer: Color @Composable get() = LocalVippattiColors.current.warningAmberContainer
-val WarningAmberText: Color @Composable get() = LocalVippattiColors.current.warningAmberText

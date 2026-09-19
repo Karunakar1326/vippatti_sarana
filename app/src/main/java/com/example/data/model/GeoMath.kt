@@ -50,26 +50,6 @@ object GeoMath {
     return GeoPoint(Math.toDegrees(lat2), lonDeg)
   }
 
-  /** Ray-casting point-in-polygon test (lat/lon ring). */
-  fun pointInPolygon(lat: Double, lon: Double, polygon: List<GeoPoint>): Boolean {
-    if (polygon.size < 3) return false
-    var inside = false
-    var j = polygon.size - 1
-    for (i in polygon.indices) {
-      val yi = polygon[i].lat
-      val xi = polygon[i].lon
-      val yj = polygon[j].lat
-      val xj = polygon[j].lon
-      if (((yi > lat) != (yj > lat)) &&
-        (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)
-      ) {
-        inside = !inside
-      }
-      j = i
-    }
-    return inside
-  }
-
   /** Great-circle bearing in degrees [0..360) from [from] to [to]. */
   fun bearingDegrees(from: GeoPoint, to: GeoPoint): Double {
     val lat1 = Math.toRadians(from.lat)

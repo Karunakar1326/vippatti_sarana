@@ -1,11 +1,5 @@
 package com.example.data.model
 
-import com.example.data.routing.GeoPoint
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
-
 /**
  * Classification describing HOW a piece of operational data was produced.
  * Every major data model carries this so future verified feeds
@@ -46,30 +40,4 @@ data class DataProvenance(
     const val STATUS_PLANNED = "FUTURE INTEGRATION"
     private const val FRESHNESS_WINDOW_MS = 6L * 60L * 60L * 1000L
   }
-}
-
-/**
- * Intelligent map layer registry. Only layers whose data actually exists in the
- * application are rendered; planned layers document which Indian authority
- * dataset will feed them once integration is connected. No live dataset is
- * claimed until it is really wired in.
- */
-enum class MapLayerId(
-  val label: String,
-  val isAvailableNow: Boolean,
-  val plannedIntegration: String
-) {
-  HAZARD_ZONES("Hazard Zones", true, "IMD / KSDMA / NRSC hazard feeds"),
-  SAFE_ZONES("Safe Zones", true, "KSDMA shelter registry"),
-  SHELTER_CAPACITY("Shelter Capacity", true, "Dynamic shelter occupancy updates"),
-  ROADS("Roads", true, "OpenStreetMap base data"),
-  EVACUATION_CORRIDOR("Evacuation Corridor", true, "OSRM road routing"),
-  HOSPITALS("Hospitals", false, "State health directory"),
-  SCHOOLS("Schools", false, "UDISE+ education dataset"),
-  EMERGENCY_SERVICES("Emergency Services", false, "NDMA / district control rooms"),
-  RIVERS("Rivers", false, "CWC river monitoring"),
-  BRIDGES("Bridges", false, "PWD bridge inventory"),
-  TERRAIN_SLOPE("Terrain & Slope", false, "GSI / NRSC terrain products"),
-  HISTORICAL_DISASTER_AREAS("Historical Disaster Areas", false, "GSI landslide atlas / CWC flood archive"),
-  LIVE_INCIDENTS("Live Incidents", false, "NDMA SACHET / KSDMA live alerts")
 }

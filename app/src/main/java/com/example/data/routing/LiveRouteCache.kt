@@ -17,9 +17,9 @@ class LiveRouteCache(private val maxEntries: Int = 30) {
 
   private val map = LinkedHashMap<String, RouteResult>()
 
-  fun get(key: String): RouteResult? = map[key]
+  @Synchronized fun get(key: String): RouteResult? = map[key]
 
-  fun put(key: String, route: RouteResult) {
+  @Synchronized fun put(key: String, route: RouteResult) {
     if (!route.isLiveOsrm || route.pathPoints.isEmpty()) return
     map.remove(key)
     map[key] = route
@@ -28,9 +28,9 @@ class LiveRouteCache(private val maxEntries: Int = 30) {
     }
   }
 
-  fun clear() = map.clear()
+  @Synchronized fun clear() = map.clear()
 
-  fun size(): Int = map.size
+  @Synchronized fun size(): Int = map.size
 
   companion object {
     /** Origin grid cell size in degrees (~500 m) — jitter inside a cell reuses. */

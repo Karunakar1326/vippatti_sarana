@@ -214,35 +214,11 @@ object IndiaGeo {
   /** National map default view — the whole of India, NOT any pilot district. */
   const val CENTER_LAT = 20.5937
   const val CENTER_LON = 78.9629
-  const val OVERVIEW_ZOOM = 4.9
-
-  /** Pilot region coverage circle (Idukki district, Kerala). */
-  const val PILOT_CENTER_LAT = 9.84778
-  const val PILOT_CENTER_LON = 76.94222
-  const val PILOT_COVERAGE_RADIUS_METERS = 80_000.0
 
   fun contains(lat: Double, lon: Double): Boolean =
     lat in MIN_LAT..MAX_LAT && lon in MIN_LON..MAX_LON
 
   fun contains(point: GeoPoint): Boolean = contains(point.lat, point.lon)
-
-  fun isPointInIndia(geometry: EventGeometry): Boolean = when (geometry) {
-    is EventGeometry.Point -> contains(geometry.lat, geometry.lon)
-    is EventGeometry.MultiPoint -> geometry.points.any { contains(it) }
-    is EventGeometry.Line -> geometry.points.any { contains(it) }
-    is EventGeometry.Polygon -> geometry.ring.any { contains(it) }
-    is EventGeometry.RasterLayer -> false
-  }
-
-  /** True when [point] lies inside the pilot safe-zone coverage circle. */
-  fun isWithinPilotCoverage(point: GeoPoint): Boolean {
-    val dLat = point.lat - PILOT_CENTER_LAT
-    val dLon = point.lon - PILOT_CENTER_LON
-    val latScale = 110_574.0
-    val lonScale = latScale * kotlin.math.cos(Math.toRadians(PILOT_CENTER_LAT))
-    val meters = (dLat * dLat * latScale * latScale + dLon * dLon * lonScale * lonScale)
-    return meters <= PILOT_COVERAGE_RADIUS_METERS * PILOT_COVERAGE_RADIUS_METERS
-  }
 }
 
 // ============================================================================

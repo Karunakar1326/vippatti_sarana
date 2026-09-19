@@ -1,8 +1,8 @@
 package com.example.data.news
 
-import com.example.data.DispatchIconType
-import com.example.data.DispatchTagType
-import com.example.data.FeedDispatch
+import com.example.data.disaster.DispatchIconType
+import com.example.data.disaster.DispatchTagType
+import com.example.data.disaster.FeedDispatch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale

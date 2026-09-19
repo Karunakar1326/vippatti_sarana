@@ -118,12 +118,20 @@ class NewsFileCache(cacheDir: File) : NewsCache {
             .put("category", article.category.name)
         )
       }
-      shardFile(scope).writeText(
+      val target = shardFile(scope)
+      // Atomic write: a process kill mid-write must not leave a truncated
+      // shard that would blank the whole feed on next read.
+      val tmp = File(dir, "${target.name}.tmp")
+      tmp.writeText(
         JSONObject()
           .put("fetchedAtMillis", fetchedAtMillis)
           .put("articles", arr)
           .toString()
       )
+if (!tmp.renameTo(target)) {
+        target.writeText(tmp.readText())
+        tmp.delete()
+      }
     } catch (e: Exception) {
       // Cache write failure is non-fatal: the live feed still renders.
     }

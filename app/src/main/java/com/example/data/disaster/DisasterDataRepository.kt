@@ -1,8 +1,6 @@
 package com.example.data.disaster
 
-import com.example.data.model.GeoMath
 import com.example.data.model.HazardZone
-import com.example.data.routing.GeoPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -20,15 +18,7 @@ data class ProviderState(
   val isFromCache: Boolean,
   val isLive: Boolean,
   val statusMessage: String?
-) {
-  val freshnessLabel: String
-    get() = when {
-      fetchedAtMillis <= 0L -> "Unavailable"
-      isLive -> "Live"
-      isFromCache -> "Cached"
-      else -> "Recent"
-    }
-}
+)
 
 /** Full repository snapshot consumed by the ViewModel + map renderer. */
 data class DisasterFeed(
@@ -190,36 +180,4 @@ fun List<DisasterEvent>.dedupeBySourceEventId(): List<DisasterEvent> {
 /** Hazard zones for the risk/evaluator/routing engines (live events only). */
 fun toHazardZones(events: List<DisasterEvent>): List<HazardZone> =
   events.mapNotNull { DisasterEventNormalizer.toHazardZone(it) }
-
-/** Bounding-box query over in-memory events (map geographic filtering). */
-fun List<DisasterEvent>.inBounds(
-  minLat: Double, minLon: Double, maxLat: Double, maxLon: Double
-): List<DisasterEvent> = filter { event ->
-  when (val g = event.geometry) {
-    is EventGeometry.Point -> g.lat in minLat..maxLat && g.lon in minLon..maxLon
-    is EventGeometry.MultiPoint -> g.points.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.Line -> g.points.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.Polygon -> g.ring.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.RasterLayer -> false
-  }
-}
-
-/** Radius query over in-memory events (local analysis around the user). */
-fun List<DisasterEvent>.withinRadius(center: GeoPoint, radiusMeters: Double): List<DisasterEvent> =
-  filter { event ->
-    val point = when (val g = event.geometry) {
-      is EventGeometry.Point -> GeoPoint(g.lat, g.lon)
-      is EventGeometry.MultiPoint -> g.points.firstOrNull() ?: return@filter false
-      is EventGeometry.Line -> g.points.firstOrNull() ?: return@filter false
-      is EventGeometry.Polygon -> g.ring.firstOrNull() ?: return@filter false
-      is EventGeometry.RasterLayer -> return@filter false
-    }
-    GeoMath.distanceMeters(center, point) <= radiusMeters
-  }
 

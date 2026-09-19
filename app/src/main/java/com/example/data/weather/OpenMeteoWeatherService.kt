@@ -1,6 +1,6 @@
 package com.example.data.weather
 
-import com.example.data.WeatherMetrics
+import com.example.data.disaster.WeatherMetrics
 import com.example.data.routing.GeoPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
