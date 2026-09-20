@@ -35,6 +35,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.disaster.WeatherMetrics
 import com.example.data.disaster.DisasterLayer
+import com.example.data.model.DataStatus
+import com.example.ui.components.StatusBadge
+import com.example.ui.components.dataStatusColor
 import com.example.ui.theme.EmergencyRed
 import com.example.ui.theme.EmergencyRedBright
 import com.example.ui.theme.EmergencyRedContainer
@@ -51,12 +54,16 @@ import com.example.viewmodel.VippattiUiState
 
 // ============================================================================
 // COMPACT WEATHER ROW — LIVE temp / rainfall / wind / 3-hr trend in one line
-// (Open-Meteo, keyless). Offline the cells honestly read "—" until a live
-// reading lands.
+// (Open-Meteo, keyless). The tag reads the shared data status: LIVE only for a
+// reading fetched in this session, STALE when a refresh failed but a real
+// earlier reading is still shown, NO FEED when there is nothing to show.
 // ============================================================================
 
 @Composable
-internal fun CompactWeatherRow(weather: WeatherMetrics, isLive: Boolean) {
+internal fun CompactWeatherRow(weather: WeatherMetrics, status: DataStatus) {
+  val isLive = status == DataStatus.SUCCESS
+  val isStale = status == DataStatus.STALE
+  val tagColor = dataStatusColor(status)
   Row(
     modifier = Modifier
       .fillMaxWidth()
@@ -68,21 +75,25 @@ internal fun CompactWeatherRow(weather: WeatherMetrics, isLive: Boolean) {
     verticalAlignment = Alignment.CenterVertically,
     horizontalArrangement = Arrangement.spacedBy(10.dp)
   ) {
-    // Live-source tag: LIVE once an Open-Meteo reading lands, otherwise the
-    // honest empty state.
+    // Live-source tag: derived from the weather data status, never from whether
+    // the row happens to have text in it.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
       Text(
-        text = if (isLive) "LIVE" else "NO",
+        text = when {
+          isLive -> "LIVE"
+          isStale -> "STALE"
+          else -> "NO"
+        },
         fontSize = 8.sp,
         fontWeight = FontWeight.Black,
-        color = if (isLive) NeonEmerald else TacticalOnSurfaceVariant,
+        color = tagColor,
         letterSpacing = 0.5.sp
       )
       Text(
-        text = if (isLive) "WX" else "FEED",
+        text = if (isLive || isStale) "WX" else "FEED",
         fontSize = 8.sp,
         fontWeight = FontWeight.Black,
-        color = if (isLive) NeonEmerald else TacticalOnSurfaceVariant,
+        color = tagColor,
         letterSpacing = 0.5.sp
       )
     }
@@ -165,12 +176,16 @@ internal fun DisasterStatusLayerRow(
   onToggleLayer: (DisasterLayer) -> Unit,
   onToggleMockData: () -> Unit = {}
 ) {
-  val statusColor = when {
-    uiState.isDisasterDataLive -> NeonEmerald
-    uiState.providerStates.any { it.isFromCache } -> TacticalCyan
-    uiState.providerStates.any { it.statusMessage != null } -> WarningAmber
-    else -> TacticalOnSurfaceVariant
+  val providerStatuses = uiState.providerStatuses
+  // Aggregate status for the demo chip colour: LIVE wins, then a real provider
+  // failure, then cached/stale data.
+  val aggregateStatus = when {
+    uiState.isDisasterDataLive -> DataStatus.SUCCESS
+    providerStatuses.any { (_, status) -> status == DataStatus.ERROR } -> DataStatus.ERROR
+    providerStatuses.any { (_, status) -> status == DataStatus.STALE } -> DataStatus.STALE
+    else -> DataStatus.EMPTY
   }
+  val statusColor = dataStatusColor(aggregateStatus)
   LazyRow(
     modifier = Modifier
       .fillMaxWidth()
@@ -185,10 +200,34 @@ internal fun DisasterStatusLayerRow(
     item {
       StatusChip(
         text = if (uiState.isMockDataVisible) "SIMULATED DEMO • ON" else "SIMULATED DEMO • OFF",
-        color = if (uiState.isMockDataVisible) statusColor else TacticalOnSurfaceVariant,
+        color = if (uiState.isMockDataVisible) TacticalCyan else TacticalOnSurfaceVariant,
         testTag = "disaster_data_status_chip",
         onClick = onToggleMockData
       )
+    }
+    // Per-provider provenance: one badge per real source, with its own status
+    // (LIVE / STALE / ERROR) and the provider's own reason text. Rendered only
+    // for sources that actually reported state - nothing is invented here.
+    items(providerStatuses, key = { (state, _) -> state.source.name }) { (state, status) ->
+      Row(
+        modifier = Modifier
+          .clip(RoundedCornerShape(999.dp))
+          .background(ObsidianContainer.copy(alpha = 0.9f))
+          .padding(horizontal = 6.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+      ) {
+        StatusBadge(status)
+        Text(
+          // Provider name plus, when it did not answer, the exact failure kind
+          // (not configured / authentication failed / failed).
+          text = state.failureKind?.let { "${state.source.label} • ${it.label}" }
+            ?: state.source.label,
+          fontSize = 9.sp,
+          color = TacticalOnSurfaceVariant,
+          maxLines = 1
+        )
+      }
     }
     // Layer toggles — only layers the providers/data model actually support.
     listOf(

@@ -1,4 +1,4 @@
-package com.example.data.news
+﻿package com.example.data.news
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,18 +11,28 @@ import kotlinx.coroutines.withContext
  *    (<= 30 min) is served on cold start without spending any request;
  *  - deduped by article id AND normalized title, newest first, with the
  *    closest scope winning duplicates;
- *  - honest errors only — cached articles survive offline, nothing is
+ *  - honest errors only â€” cached articles survive offline, nothing is
  *    fabricated.
  */
 class NewsRepository(
   private val service: GNewsService,
   private val cache: NewsCache,
   private val apiKeyProvider: () -> String,
-  private val clock: () -> Long = System::currentTimeMillis
+  private val clock: () -> Long = System::currentTimeMillis,
+  /** Storage I/O dispatcher â€” tests inject the scheduler's dispatcher so runs are deterministic. */
+  private val storageDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
 ) {
 
-  /** Manual sync: always goes to the live GNews API (cache is updated). */
-  suspend fun refresh(): NewsFeed {
+  /**
+   * Manual sync: always goes to the live GNews API (cache is updated).
+   *
+   * [queries] carries the runtime search rings (district/state/national) built
+   * from the resolved place. The default is the national ring only - a caller
+   * that has not resolved a location must not query a province it assumed.
+   */
+  suspend fun refresh(
+    queries: List<NewsQueryFactory.ScopedNewsQuery> = NewsQueryFactory.buildQueries(null)
+  ): NewsFeed {
     val apiKey = apiKeyProvider().trim()
     if (apiKey.isBlank() || apiKey == GNEWS_PLACEHOLDER_KEY) {
       return cachedOnlyFeed(NewsError(NewsErrorKind.NO_API_KEY, NO_KEY_MESSAGE))
@@ -30,18 +40,19 @@ class NewsRepository(
     val now = clock()
     val collected = mutableListOf<NewsArticle>()
     var error: NewsError? = null
-    for (scope in NewsScope.values()) {
-      when (val call = service.search(scope, apiKey)) {
+    for (scoped in queries) {
+      val scope = scoped.scope
+      when (val call = service.search(scope, scoped.query, apiKey)) {
         is GNewsCall.Success -> {
           collected += call.articles
-          // Never overwrite a useful shard with an empty live result — an
+          // Never overwrite a useful shard with an empty live result â€” an
           // empty scope keeps its previous (past) coverage for the fallback.
           if (call.articles.isNotEmpty()) {
-            withContext(Dispatchers.IO) { cache.write(scope, call.articles, now) }
+            withContext(storageDispatcher) { cache.write(scope, call.articles, now) }
           }
         }
         is GNewsCall.Failure -> {
-          // Quota/auth/network failure — stop the cascade; remaining scopes
+          // Quota/auth/network failure â€” stop the cascade; remaining scopes
           // fall back to their cache shards inside cachedOnlyFeed.
           error = call.error
           break
@@ -65,8 +76,10 @@ class NewsRepository(
    * Cold start: serve the cache instantly when it is fresh (offline survival
    * + quota protection); otherwise perform a live refresh.
    */
-  suspend fun ensureLoaded(): NewsFeed {
-    val cached = withContext(Dispatchers.IO) { readAllUsableCached() }
+  suspend fun ensureLoaded(
+    queries: List<NewsQueryFactory.ScopedNewsQuery> = NewsQueryFactory.buildQueries(null)
+  ): NewsFeed {
+    val cached = withContext(storageDispatcher) { readAllUsableCached() }
     val articles = mergeArticles(NewsFilter.filterForDisaster(cached.flatMap { it.articles }))
     val newestFetch = cached.maxOfOrNull { it.fetchedAtMillis }
     if (newestFetch != null && NewsCachePolicy.isFresh(newestFetch, clock())) {
@@ -78,11 +91,11 @@ class NewsRepository(
         error = null
       )
     }
-    return refresh()
+    return refresh(queries)
   }
 
   private suspend fun cachedOnlyFeed(error: NewsError?): NewsFeed {
-    val cached = withContext(Dispatchers.IO) { readAllUsableCached() }
+    val cached = withContext(storageDispatcher) { readAllUsableCached() }
     val articles = mergeArticles(NewsFilter.filterForDisaster(cached.flatMap { it.articles }))
     return NewsFeed(
       articles = articles,

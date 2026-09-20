@@ -11,7 +11,13 @@ enum class DataClassification(val label: String) {
   DERIVED("Derived"),
   ESTIMATED("Estimated"),
   CONFIGURED("Configured"),
-  SIMULATED("Simulated")
+  SIMULATED("Simulated"),
+  /**
+   * A record from a historical archive (EM-DAT). It describes something that
+   * happened in the past: it is never live, never current, and never a hazard
+   * zone - even though the archive itself is updated periodically.
+   */
+  HISTORICAL("Historical")
 }
 
 /**
@@ -28,10 +34,13 @@ data class DataProvenance(
   val recordedAtMillis: Long = 0L,
   val lastUpdatedMillis: Long = 0L
 ) {
-  /** A record with no timestamp is treated as always usable (field data). */
+  /**
+   * A record with no timestamp is never fresh: time unknown means freshness
+   * unknown. (Legacy behaviour treated 0 as fresh; fixed for honesty.)
+   */
   val isFresh: Boolean
-    get() = lastUpdatedMillis <= 0L ||
-      (System.currentTimeMillis() - lastUpdatedMillis) < FRESHNESS_WINDOW_MS
+    get() = lastUpdatedMillis > 0L &&
+      (System.currentTimeMillis() - lastUpdatedMillis) in 0 until FRESHNESS_WINDOW_MS
 
   companion object {
     const val STATUS_FIELD = "FIELD RECORD"

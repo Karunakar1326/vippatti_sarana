@@ -63,7 +63,13 @@ data class WeatherMetrics(
   val rainfallIntensity: String = "",
   val windGust: String = "",
   val trend3h: String = "",
-  val surgeForecast: String = ""
+  val surgeForecast: String = "",
+  /**
+   * PHASE 3: the PROVIDER's own observation time (Open-Meteo `current.time` +
+   * `utc_offset_seconds`). 0L = the payload carried no usable timestamp, which
+   * the UI shows as "observation time unknown" - it is never estimated.
+   */
+  val observedAtMillis: Long = 0L
 )
 
 /**

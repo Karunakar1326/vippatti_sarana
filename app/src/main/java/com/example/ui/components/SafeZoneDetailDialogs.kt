@@ -1,4 +1,4 @@
-package com.example.ui.components
+﻿package com.example.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -49,7 +49,9 @@ fun SafeZoneDetailDialog(
   zone: com.example.data.model.SafeZone,
   evaluation: com.example.data.shelters.SafeZoneEvaluation?,
   onDismiss: () -> Unit,
-  onSelectAndRoute: () -> Unit
+  onSelectAndRoute: () -> Unit,
+  /** Carrying-capacity verdict for this site; null = not assessed (says so). */
+  capacityAssessment: com.example.data.capacity.CapacityAssessment? = null
 ) {
   val capacity = com.example.data.shelters.ShelterCapacityService.report(zone)
   Dialog(onDismissRequest = onDismiss) {
@@ -77,7 +79,7 @@ fun SafeZoneDetailDialog(
           Column {
             Text(
               text = "SAFE ZONE INTELLIGENCE",
-              fontSize = 10.sp,
+              fontSize = 12.sp,
               fontWeight = FontWeight.Black,
               color = NeonEmerald,
               letterSpacing = 0.8.sp
@@ -90,18 +92,28 @@ fun SafeZoneDetailDialog(
             )
             Text(
               text = zone.locationNote,
-              fontSize = 10.sp,
+              fontSize = 12.sp,
               color = TacticalOnSurfaceVariant
             )
             Text(
               text = String.format(
                 java.util.Locale.US,
-                "%.4f N, %.4f E • ${zone.availableCapacity}/${zone.capacityTotal} spots free",
+                "%.4f N, %.4f E â€¢ ${zone.availableCapacity}/${zone.capacityTotal} spots free",
                 zone.lat,
                 zone.lon
               ),
-              fontSize = 10.sp,
+              fontSize = 12.sp,
               color = TacticalOnSurfaceVariant
+            )
+            // Provenance: simulated shelter records are never labelled live or verified.
+            com.example.ui.components.StatusBadge(
+              status = if (zone.provenance.classification ==
+                com.example.data.model.DataClassification.SIMULATED
+              ) {
+                com.example.data.model.DataStatus.SIMULATED
+              } else {
+                com.example.data.model.DataStatus.NOT_VERIFIED
+              }
             )
           }
           IconButton(onClick = onDismiss) {
@@ -119,7 +131,7 @@ fun SafeZoneDetailDialog(
             .padding(12.dp),
           verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-          Text("CARRYING CAPACITY", fontSize = 10.sp, fontWeight = FontWeight.Black, color = NeonEmerald, letterSpacing = 0.6.sp)
+          Text("CARRYING CAPACITY", fontSize = 12.sp, fontWeight = FontWeight.Black, color = NeonEmerald, letterSpacing = 0.6.sp)
           Text("Total Capacity: ${capacity.totalCapacity}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
           Text("Current Occupancy: ${capacity.currentOccupancy}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TacticalOnSurface)
           Text(
@@ -148,12 +160,135 @@ fun SafeZoneDetailDialog(
             },
             trackColor = ObsidianContainerHigh
           )
-          Text("${capacity.occupancyPercent}% occupied", fontSize = 10.sp, color = TacticalOnSurfaceVariant)
+          Text("${capacity.occupancyPercent}% occupied", fontSize = 12.sp, color = TacticalOnSurfaceVariant)
+        }
+
+        // --- Relocation feasibility: demand vs effective carrying capacity ---
+        Column(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(ObsidianContainerHigh)
+            .border(
+              1.dp,
+              feasibilityColor(capacityAssessment).copy(alpha = 0.35f),
+              RoundedCornerShape(12.dp)
+            )
+            .padding(12.dp),
+          verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+          Text(
+            "RELOCATION FEASIBILITY",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Black,
+            color = TacticalCyan,
+            letterSpacing = 0.6.sp
+          )
+          if (capacityAssessment == null) {
+            // Never imply feasibility that was not computed.
+            InfoLine("Feasibility", "Not assessed for this site")
+          } else {
+            Text(
+              text = capacityAssessment.status.label.uppercase(),
+              fontSize = 13.sp,
+              fontWeight = FontWeight.Black,
+              color = feasibilityColor(capacityAssessment),
+              modifier = Modifier.testTag("capacity_feasibility_status")
+            )
+            InfoLine(
+              "Population requirement",
+              (capacityAssessment.demand.people?.let { "$it people" } ?: "Not available") +
+                " — ${capacityAssessment.demand.roleLabel}"
+            )
+            InfoLine("Population scope", capacityAssessment.demand.scopeLabel)
+            InfoLine(
+              "Population data",
+              (capacityAssessment.demand.classification?.label ?: "Not provided") +
+                " • ${capacityAssessment.demand.source}" +
+                (capacityAssessment.demand.derivedFromRole?.let {
+                  " • derived from ${it.label.lowercase()}"
+                } ?: "")
+            )
+            InfoLine(
+              "Population reference",
+              capacityAssessment.demand.referenceMillis?.let { reference ->
+                java.text.SimpleDateFormat("dd MMM yyyy", java.util.Locale.getDefault())
+                  .format(java.util.Date(reference)) +
+                  " (" + com.example.data.news.NewsPresentation.relativeAge(
+                    reference,
+                    System.currentTimeMillis()
+                  ) + ")"
+              } ?: "Not stated by the source"
+            )
+            InfoLine(
+              "Effective capacity",
+              capacityAssessment.effectiveCapacity?.let { "$it people" } ?: "Not available"
+            )
+            InfoLine(
+              "Remaining capacity",
+              capacityAssessment.remainingCapacity?.let { "$it people" } ?: "None"
+            )
+            InfoLine(
+              "Shortfall",
+              capacityAssessment.shortfall?.let { "$it people" } ?: "None"
+            )
+            InfoLine(
+              "Limiting resource",
+              capacityAssessment.limitingResource?.label ?: "Not identified (no data)"
+            )
+            InfoLine("Reason", capacityAssessment.explanation)
+            InfoLine("Data source", capacityAssessment.sourceLine)
+            InfoLine(
+              "Assessed at",
+              java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date(capacityAssessment.assessedAtMillis)) +
+                " (" + com.example.data.news.NewsPresentation.relativeAge(
+                  capacityAssessment.assessedAtMillis,
+                  System.currentTimeMillis()
+                ) + ")"
+            )
+            // Per-constraint breakdown: missing inputs are shown as such, never as 0.
+            Text("CONSTRAINTS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = TacticalOnSurfaceVariant, letterSpacing = 0.5.sp)
+            capacityAssessment.resources.forEach { resource ->
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+              ) {
+                Text(
+                  text = resource.resource.label,
+                  fontSize = 11.sp,
+                  color = TacticalOnSurface,
+                  modifier = Modifier.weight(1f)
+                )
+                Text(
+                  text = resource.peopleSupported?.let { "$it" } ?: resource.state.label,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = when {
+                    resource.peopleSupported == null -> TacticalOnSurfaceVariant
+                    resource.recordedAbsence -> EmergencyRedBright
+                    else -> NeonEmerald
+                  }
+                )
+              }
+              Text(resource.basis, fontSize = 9.sp, color = TacticalOnSurfaceVariant)
+            }
+            val assumptions = capacityAssessment.assumptions + capacityAssessment.demand.notes
+            if (assumptions.isNotEmpty()) {
+              InfoLine("Assumptions & limitations", assumptions.distinct().joinToString(" "))
+            }
+            InfoLine(
+              "Data classification",
+              capacityAssessment.provenance.classification.label +
+                " • " + capacityAssessment.provenance.source
+            )
+          }
         }
 
         // --- Resources ---
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Text("FACILITY RESOURCES", fontSize = 10.sp, fontWeight = FontWeight.Black, color = TacticalCyan, letterSpacing = 0.6.sp)
+          Text("FACILITY RESOURCES", fontSize = 12.sp, fontWeight = FontWeight.Black, color = TacticalCyan, letterSpacing = 0.6.sp)
           ResourceRow("Water", zone.waterAvailable)
           ResourceRow("Food", zone.foodAvailable)
           ResourceRow("Electricity", zone.electricityAvailable)
@@ -168,14 +303,14 @@ fun SafeZoneDetailDialog(
         // --- Why this safe zone (evaluation reasons) ---
         if (evaluation != null && evaluation.isFeasible) {
           Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("WHY THIS SAFE ZONE?", fontSize = 10.sp, fontWeight = FontWeight.Black, color = NeonEmerald, letterSpacing = 0.6.sp)
+            Text("WHY THIS SAFE ZONE?", fontSize = 12.sp, fontWeight = FontWeight.Black, color = NeonEmerald, letterSpacing = 0.6.sp)
             evaluation.reasons.forEach { reason ->
               Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Top) {
                 Icon(Icons.Default.Check, contentDescription = null, tint = NeonEmerald, modifier = Modifier.size(12.dp))
                 Text(reason.text, fontSize = 11.sp, color = TacticalOnSurface, lineHeight = 14.sp)
               }
             }
-            Text("Rank score: ${evaluation.score}", fontSize = 10.sp, color = TacticalOnSurfaceVariant)
+            Text("Rank score: ${evaluation.score}", fontSize = 12.sp, color = TacticalOnSurfaceVariant)
           }
         } else if (evaluation != null) {
           Text(
@@ -212,6 +347,17 @@ fun SafeZoneDetailDialog(
 }
 
 @Composable
+private fun feasibilityColor(
+  assessment: com.example.data.capacity.CapacityAssessment?
+): androidx.compose.ui.graphics.Color = when (assessment?.status) {
+  com.example.data.capacity.FeasibilityStatus.FEASIBLE -> NeonEmerald
+  com.example.data.capacity.FeasibilityStatus.INFEASIBLE -> EmergencyRedBright
+  com.example.data.capacity.FeasibilityStatus.SIMULATED -> TacticalCyan
+  com.example.data.capacity.FeasibilityStatus.INSUFFICIENT_DATA -> WarningAmber
+  null -> TacticalOnSurfaceVariant
+}
+
+@Composable
 private fun ResourceRow(label: String, available: Boolean) {
   Row(
     modifier = Modifier.fillMaxWidth(),
@@ -221,7 +367,7 @@ private fun ResourceRow(label: String, available: Boolean) {
     Text(label, fontSize = 12.sp, color = TacticalOnSurface)
     Text(
       text = if (available) "AVAILABLE" else "NOT AVAILABLE",
-      fontSize = 10.sp,
+      fontSize = 12.sp,
       fontWeight = FontWeight.Bold,
       color = if (available) NeonEmerald else EmergencyRedBright
     )

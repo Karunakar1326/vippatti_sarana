@@ -22,8 +22,23 @@ import com.example.data.news.NewsError
 import com.example.data.news.NewsFeed
 import com.example.data.news.NewsRepository
 import com.example.data.news.NewsTtsBulletin
+import com.example.data.capacity.CarryingCapacityEngine
+import com.example.data.capacity.RelocationDemand
+import com.example.data.location.PlaceResolver
+import com.example.data.population.NoPopulationProvider
+import com.example.data.population.PopulationDataProvider
+import com.example.data.population.PopulationDemandPolicy
+import com.example.data.population.PopulationDemandResolver
+import com.example.data.population.PopulationRecord
+import com.example.data.location.ResolvedPlace
+import com.example.data.location.UnresolvedPlaceResolver
+import com.example.data.news.NewsQueryFactory
 import com.example.data.weather.OpenMeteoWeatherService
+import com.example.data.weather.WeatherReading
+import com.example.data.weather.dataStatus
+import com.example.data.weather.reason
 import com.example.data.model.GeoMath
+import com.example.data.model.DataStatus
 import com.example.data.model.HazardSeverity
 import com.example.data.model.HazardZone
 import com.example.data.model.SafeZone
@@ -63,6 +78,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -81,6 +97,15 @@ private const val MAX_INCIDENT_REPORTS = 50
 /** Siren auto-stop window, surfaced to the user as a visible countdown. */
 const val SIREN_MAX_SECONDS = 60
 
+/**
+ * Place resolution guard: re-resolve the district/state only after the user has
+ * actually moved this far, since the reverse geocoder is a network service.
+ */
+private const val PLACE_RESOLVE_MIN_MOVEMENT_METERS = 2_000.0
+
+/** Reverse-geocode timeout; on expiry the app honestly stays national-scoped. */
+private const val PLACE_RESOLVE_TIMEOUT_MS = 6_000L
+
 /** Reason string returned when the CAMERA permission is required for the torch. */
 const val TORCH_REASON_PERMISSION = "Camera permission is required to switch the light on."
 
@@ -91,6 +116,15 @@ const val TORCH_REASON_PERMISSION = "Camera permission is required to switch the
  */
 private const val WEATHER_MIN_REFRESH_MS = 10L * 60L * 1000L
 private const val WEATHER_MIN_MOVEMENT_METERS = 2_000.0
+
+/**
+ * STAGE 5 — closure/traffic honesty note. OSRM computes road geometry and the
+ * app checks it against known hazard geometry, but there is no road-closure
+ * feed and no live-traffic feed in this build, so every READY road-route
+ * message carries this sentence. It is a single constant so the cached, live
+ * and alternatives messages can never drift apart.
+ */
+private const val ROUTE_LIMITATIONS_NOTE = "Road closures and live traffic are not verified."
 
 
 class VippattiViewModel(
@@ -130,11 +164,44 @@ class VippattiViewModel(
   /** News pipeline override — tests inject a failing/fake service (no real network). */
   private val newsRepositoryOverride: NewsRepository? = null,
   /**
-   * Weather fetcher — production reads live Open-Meteo; tests inject a fake so
-   * unit tests never perform real HTTP.
+   * Runtime place resolver (dynamic-data rule): district/state names for news
+   * scoping come from the user's own coordinates, never from constants. The
+   * default resolves nothing, so a caller without a resolver stays national.
    */
-  private val weatherFetcher: suspend (GeoPoint) -> WeatherMetrics? =
-    OpenMeteoWeatherService::fetchNow
+  private val placeResolver: PlaceResolver = UnresolvedPlaceResolver,
+  /**
+   * Population source boundary (SIH 26191). No census/relief-registry API is
+   * connected in this build, so the default returns nothing and the demand
+   * resolution honestly reports INSUFFICIENT_DATA until a real source is wired.
+   */
+  private val populationProvider: PopulationDataProvider = NoPopulationProvider,
+  /**
+   * HISTORICAL DISASTER INTELLIGENCE (EM-DAT). Bundled as an asset in
+   * production; tests inject a fake string. Nothing here is a live feed, so the
+   * dataset is loaded once per process and never reported as live.
+   */
+  private val historicalProvider: com.example.data.historical.HistoricalDataProvider =
+    com.example.data.historical.NoHistoricalDataProvider,
+  /**
+   * Weather fetcher — production reads live Open-Meteo; tests inject a fake so
+   * unit tests never perform real HTTP. Returns a [WeatherReading] so a failure
+   * arrives with its real reason instead of a bare null.
+   */
+  private val weatherFetcher: suspend (GeoPoint) -> WeatherReading =
+    OpenMeteoWeatherService::fetchReading,
+  /**
+   * Live road-route fetcher — production calls the OSRM service over HTTP on a
+   * worker thread; tests inject a fake (success or failure) so the explicit
+   * route states are covered deterministically without any real network.
+   */
+  private val liveRouteFetcher: suspend (
+    origin: GeoPoint,
+    destination: GeoPoint,
+    mode: String,
+    hazards: List<HazardZone>,
+    destinationName: String,
+    wantAlternatives: Int
+  ) -> List<RouteResult> = OsrmRoutingService::fetchLiveRoutesAsync
 ) : ViewModel() {
 
   /** Real GNews disaster-news pipeline (live API + offline cache). */
@@ -162,6 +229,16 @@ class VippattiViewModel(
   private var weatherFetchedAtMillis = 0L
   private var weatherAnchor: GeoPoint? = null
 
+  /** Place-resolution guard: only re-resolve on meaningful movement. */
+  private var placeJob: Job? = null
+  private var placeAnchor: GeoPoint? = null
+
+  /** Population source job (SIH 26191) — no source connected by default. */
+  private var populationJob: Job? = null
+
+  /** Historical dataset job — loaded once per process (it is an archive). */
+  private var historicalJob: Job? = null
+
   /** Live road routes by destination/mode/origin-grid/hazards — instant exact roads on repeat views. */
   private val liveRouteCache = LiveRouteCache()
 
@@ -180,9 +257,125 @@ class VippattiViewModel(
     }
     // Cold start of the REAL GNews pipeline: a fresh cache (< 30 min) serves
     // instantly (offline survival + quota protection); otherwise it fetches.
-    newsJob = viewModelScope.launch { applyNewsFeed(newsRepository.ensureLoaded()) }
+    newsJob = viewModelScope.launch { applyNewsFeed(newsRepository.ensureLoaded(currentNewsQueries())) }
     // Cold start of LIVE weather (Open-Meteo, keyless) for the radar bar.
     refreshWeather()
+    // Population records for the demand pipeline (no source connected by
+    // default; an empty result keeps the demand at INSUFFICIENT_DATA).
+    refreshPopulation()
+    // HISTORICAL archive (EM-DAT): loaded once. It never feeds the live hazard
+    // picture, the risk score or an official zone - only context and evidence.
+    refreshHistoricalDataset()
+  }
+
+  // ================================================= HISTORICAL (EM-DAT)
+
+  /**
+   * Loads the bundled historical archive. Historic data is NEVER live: the
+   * status is HISTORICAL on success, UNAVAILABLE when nothing is attached and
+   * ERROR when an attached dataset cannot be read.
+   */
+  fun refreshHistoricalDataset() {
+    historicalJob?.cancel()
+    _uiState.update { it.copy(historicalStatus = DataStatus.LOADING) }
+    historicalJob = viewModelScope.launch {
+      val result = try {
+        historicalProvider.load(System.currentTimeMillis())
+      } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+      } catch (error: Exception) {
+        com.example.data.historical.HistoricalLoadResult.Failed(
+          error.message ?: error.javaClass.simpleName
+        )
+      }
+      when (result) {
+        is com.example.data.historical.HistoricalLoadResult.Loaded -> {
+          _uiState.update {
+            it.copy(
+              historicalCatalog = result.catalog,
+              historicalStatus = DataStatus.HISTORICAL,
+              historicalError = null
+            )
+          }
+        }
+        is com.example.data.historical.HistoricalLoadResult.Unavailable -> {
+          _uiState.update {
+            it.copy(
+              historicalCatalog = null,
+              historicalStatus = DataStatus.NOT_CONFIGURED,
+              historicalError = result.reason
+            )
+          }
+        }
+        is com.example.data.historical.HistoricalLoadResult.Failed -> {
+          _uiState.update {
+            it.copy(
+              historicalCatalog = null,
+              historicalStatus = DataStatus.ERROR,
+              historicalError = result.reason
+            )
+          }
+        }
+      }
+      refreshHistoricalContext()
+    }
+  }
+
+  /**
+   * Rebuilds the area-level historical context from the RESOLVED place (never a
+   * hardcoded region). It is displayed as supporting evidence with its own
+   * limitations and does not touch the risk score.
+   */
+  private fun refreshHistoricalContext() {
+    val state = _uiState.value
+    val place = state.resolvedPlace
+    _uiState.update {
+      it.copy(
+        historicalContext = com.example.data.historical.HistoricalContextService
+          .contextFor(
+            district = place?.district,
+            state = place?.state,
+            catalog = state.historicalCatalog
+          )
+      )
+    }
+  }
+
+  /** Applies the user's historical filters (type/year/area/country). */
+  fun setHistoricalFilters(filters: com.example.data.historical.HistoricalFilters) {
+    _uiState.update { it.copy(historicalFilters = filters) }
+  }
+
+  fun clearHistoricalFilters() {
+    _uiState.update { it.copy(historicalFilters = com.example.data.historical.HistoricalFilters()) }
+  }
+
+  /**
+   * The historical map layer is OFF by default so archived events never clutter
+   * the live hazard map. Only records with their own dataset coordinates are
+   * ever drawn - no coordinate is ever inferred from location text.
+   */
+  fun toggleHistoricalLayer() {
+    val next = !_uiState.value.isHistoricalLayerOn
+    _uiState.update {
+      it.copy(
+        isHistoricalLayerOn = next,
+        snackbarMessage = if (next) {
+          "Historical layer ON — EM-DAT archive records with source coordinates; " +
+            "these are past events, not current hazards"
+        } else {
+          "Historical layer OFF"
+        }
+      )
+    }
+  }
+
+  fun openHistoricalEventDetail(event: com.example.data.historical.HistoricalDisasterEvent) {
+    _uiState.update { it.copy(historicalDetailEvent = event) }
+  }
+
+  fun closeHistoricalEventDetail() {
+    _uiState.update { it.copy(historicalDetailEvent = null) }
   }
 
   /**
@@ -203,13 +396,70 @@ class VippattiViewModel(
 
     weatherJob?.cancel()
     weatherJob = viewModelScope.launch {
-      val live = weatherFetcher(anchor)
-      if (live != null) {
-        weatherFetchedAtMillis = System.currentTimeMillis()
-        weatherAnchor = anchor
-        _uiState.update { it.copy(weather = live, isWeatherLive = true) }
-      } else if (_uiState.value.weather == WeatherMetrics()) {
-        _uiState.update { it.copy(isWeatherLive = false) }
+      when (val reading = weatherFetcher(anchor)) {
+        is WeatherReading.Success -> {
+          weatherFetchedAtMillis = System.currentTimeMillis()
+          weatherAnchor = anchor
+          _uiState.update {
+            it.copy(
+              weather = reading.metrics,
+              weatherStatus = DataStatus.SUCCESS,
+              weatherRetrievedAtMillis = weatherFetchedAtMillis,
+              weatherErrorMessage = null
+            )
+          }
+        }
+        is WeatherReading.Failure -> {
+          // Honest failure: a previously fetched real reading stays visible but
+          // is marked STALE; with nothing to show the status is UNAVAILABLE or
+          // ERROR depending on what actually went wrong. The provider/exception
+          // reason travels to the UI, and no weather value is ever invented.
+          val hasUsableReading = _uiState.value.weather != WeatherMetrics()
+          _uiState.update {
+            it.copy(
+              weatherStatus = reading.dataStatus(hasUsableReading),
+              weatherErrorMessage = reading.reason
+            )
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Pulls population records from the connected source. The default provider
+   * returns nothing (no census/registry API is wired), so the stored list stays
+   * empty and the demand resolution reports INSUFFICIENT_DATA honestly rather
+   * than substituting a figure.
+   */
+  private fun refreshPopulation() {
+    populationJob?.cancel()
+    populationJob = viewModelScope.launch {
+      // A population source is a network/registry boundary: it CAN fail. A
+      // failure must never escape the coroutine (which would crash the app),
+      // never erase records already fetched, and never invent a figure.
+      val records = try {
+        populationProvider.fetchRecords()
+      } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+      } catch (error: Exception) {
+        val reason = error.message?.takeIf { it.isNotBlank() }
+          ?: error.javaClass.simpleName
+        _uiState.update {
+          it.copy(
+            populationSourceError =
+              "Population source unavailable: $reason. Previous figures kept."
+          )
+        }
+        return@launch
+      }
+      if (records != _uiState.value.populationRecords ||
+        _uiState.value.populationSourceError != null
+      ) {
+        _uiState.update {
+          it.copy(populationRecords = records, populationSourceError = null)
+        }
+        recomputeIntelligence()
       }
     }
   }
@@ -284,10 +534,44 @@ class VippattiViewModel(
     val evaluated = SafeZoneEvaluator.evaluateAll(zonesInScope, ctx)
     val ranked = evaluated.filter { it.isFeasible }.sortedByDescending { it.score }
     val action = ActionAdvisor.recommend(risk, ranked)
+
+    // ---- CARRYING CAPACITY (SIH 26191) ------------------------------------
+    // Demand is RESOLVED from population records, in the documented priority
+    // order: verified relocation demand > authority/field assessment > affected
+    // population (needs explicit approval) > baseline population (needs explicit
+    // approval) > simulated demo demand > the citizen's own household
+    // declaration. No source connected and no approval => INSUFFICIENT_DATA.
+    // The declared household size is NEVER used as the area population.
+    val populationResolution = PopulationDemandResolver.resolve(
+      records = state.populationRecords,
+      householdDeclaration = PopulationRecord.householdDeclaration(
+        householdSize = state.userProfile.dependentsCount + 1, // citizen + dependents
+        source = "Citizen profile (editable, on device)"
+      ),
+      policy = PopulationDemandPolicy(
+        // Both derivations stay off until an authority workflow approves them.
+        allowAffectedAsDemand = false,
+        allowBaselineAsDemand = false
+      )
+    )
+    val demand = populationResolution.demand
+    // Aggregate the three distinct population figures (baseline, affected and
+    // the resolved demand) so the UI never has to re-derive them - and so they
+    // cannot be conflated.
+    val populationAssessment = com.example.data.population.PopulationAssessment.of(
+      records = state.populationRecords,
+      resolution = populationResolution
+    )
+    // Assess EVERY evaluated candidate (not only the ranked ones) so the detail
+    // sheet can be honest about rejected sites too.
+    val capacityAssessments = evaluated.associate { evaluation ->
+      evaluation.zone.id to CarryingCapacityEngine.assess(evaluation.zone, demand, now)
+    }
     val plan = RelocationPlanner.plan(
       risk,
       ranked,
-      vulnerableCategoryIds = state.userProfile.vulnerableCategoryIds
+      vulnerableCategoryIds = state.userProfile.vulnerableCategoryIds,
+      capacityAssessments = capacityAssessments
     )
 
     _uiState.update {
@@ -303,6 +587,11 @@ class VippattiViewModel(
         rankedShelters = ranked,
         recommendedAction = action,
         relocationPlan = plan,
+        capacityDemand = demand,
+        capacityAssessments = capacityAssessments,
+        populationRecords = state.populationRecords,
+        populationResolution = populationResolution,
+        populationAssessment = populationAssessment,
         selectedSafeZone = if (selectedStillVisible) it.selectedSafeZone else null,
         selectedEvaluation = if (selectedStillVisible) it.selectedEvaluation else null,
         activeRoute = if (selectedStillVisible) it.activeRoute else null,
@@ -338,8 +627,46 @@ class VippattiViewModel(
       recomputeIntelligence()
       maybeRecalculateRouteForNewLocation()
       refreshWeather()
+      refreshResolvedPlace(GeoPoint(latitude, longitude))
     }
   }
+
+  /**
+   * Resolves the CURRENT coordinates to a district/state at runtime and stores
+   * it for honest scoping labels and search rings. Nothing is assumed when the
+   * platform cannot resolve the place: the app stays national and says so.
+   */
+  private fun refreshResolvedPlace(point: GeoPoint, force: Boolean = false) {
+    val anchor = placeAnchor
+    val movedFarEnough = anchor == null ||
+      GeoMath.distanceMeters(anchor, point) >= PLACE_RESOLVE_MIN_MOVEMENT_METERS
+    if (!force && !movedFarEnough) return
+    placeJob?.cancel()
+    placeJob = viewModelScope.launch {
+      val resolved = withTimeoutOrNull(PLACE_RESOLVE_TIMEOUT_MS) {
+        placeResolver.resolve(point)
+      }
+      placeAnchor = point
+      val previous = _uiState.value.resolvedPlace
+      _uiState.update { it.copy(resolvedPlace = resolved) }
+      // Historical evidence is area-scoped, so it follows the resolved place.
+      refreshHistoricalContext()
+      // Re-scope the news feed only when the rings that actually name a place
+      // changed; the repository is cache-first, so this costs no extra call
+      // when nothing moved.
+      if (scopeKey(previous) != scopeKey(resolved)) {
+        newsJob?.cancel()
+        newsJob = viewModelScope.launch { applyNewsFeed(newsRepository.ensureLoaded(currentNewsQueries())) }
+      }
+    }
+  }
+
+  private fun scopeKey(place: ResolvedPlace?): String =
+    listOf(place?.district, place?.state).joinToString("|")
+
+  /** Search rings for the place resolved RIGHT NOW (national ring always). */
+  private fun currentNewsQueries(): List<NewsQueryFactory.ScopedNewsQuery> =
+    NewsQueryFactory.buildQueries(_uiState.value.resolvedPlace)
 
   // ====================================================== DISASTER PIPELINE
 
@@ -554,7 +881,7 @@ class VippattiViewModel(
           alternativeRoutes = emptyList(),
           isCalculatingRoute = false,
           routeStatus = RouteStatus.READY,
-          routeStatusMessage = "Cached OSRM road route to ${zone.name} — hazard-checked.",
+          routeStatusMessage = "Cached OSRM road route to ${zone.name} — hazard-checked. $ROUTE_LIMITATIONS_NOTE",
           currentNavigationStepIndex = 0
         )
       }
@@ -576,14 +903,7 @@ class VippattiViewModel(
     }
 
     routingJob = viewModelScope.launch {
-      val live = OsrmRoutingService.fetchLiveRoutesAsync(
-        origin = origin,
-        destination = zone.point,
-        mode = mode,
-        hazards = hazards,
-        destinationName = zone.name,
-        wantAlternatives = 1
-      ).firstOrNull()
+      val live = liveRouteFetcher(origin, zone.point, mode, hazards, zone.name, 1).firstOrNull()
 
       // Staleness guard: a newer selection/origin must never be overwritten.
       if (lastRouteOrigin != origin || _uiState.value.selectedSafeZone?.id != zone.id) return@launch
@@ -622,8 +942,8 @@ class VippattiViewModel(
           activeRoute = live,
           isCalculatingRoute = false,
           routeStatus = RouteStatus.READY,
-          routeStatusMessage = "Live OSRM road route to ${zone.name} — " +
-            "hazard-checked: ${live.routeSafetyStatus.label}",
+            routeStatusMessage = "Live OSRM road route to ${zone.name} — " +
+              "hazard-checked: ${live.routeSafetyStatus.label}. $ROUTE_LIMITATIONS_NOTE",
           currentNavigationStepIndex = 0
         )
       }
@@ -733,9 +1053,9 @@ class VippattiViewModel(
           isCalculatingRoute = false,
           routeStatus = RouteStatus.READY,
           routeStatusMessage = if (roadAlternatives.size > 1) {
-            "${roadAlternatives.size} verified road corridors to ${target.name} — safest first"
+            "${roadAlternatives.size} verified road corridors to ${target.name} — safest first. $ROUTE_LIMITATIONS_NOTE"
           } else {
-            "One verified road corridor found to ${target.name}"
+            "One verified road corridor found to ${target.name}. $ROUTE_LIMITATIONS_NOTE"
           },
           currentNavigationStepIndex = 0
         )
@@ -886,10 +1206,13 @@ class VippattiViewModel(
   fun syncData() {
     syncDisasterData()
     refreshWeather(force = true)
+    // Re-pull population records alongside the other live feeds (no-op with the
+    // default no-source provider).
+    refreshPopulation()
     newsJob?.cancel()
     newsJob = viewModelScope.launch {
       _uiState.update { it.copy(isSyncing = true) }
-      val feed = newsRepository.refresh()
+      val feed = newsRepository.refresh(currentNewsQueries())
       applyNewsFeed(feed)
       _uiState.update { state ->
         state.copy(

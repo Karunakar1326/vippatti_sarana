@@ -34,12 +34,31 @@ class NewsPipelineUnitTest {
   // ------------------------------------------------------- Query factory
   @Test
   fun `queries are live-validated boolean disasters queries`() {
-    assertTrue(NewsQueryFactory.MY_AREA_QUERY.contains("\"Idukki\""))
-    assertTrue(NewsQueryFactory.MY_STATE_QUERY.contains("\"Kerala\""))
-    assertTrue(NewsQueryFactory.queryFor(NewsScope.INDIA).contains("flood"))
+    // Rings come from the resolved place, not from compiled-in geography.
+    val place = testPlace()
+    val rings = NewsQueryFactory.buildQueries(place)
+    assertEquals(3, rings.size)
+    assertTrue(rings[0].query.contains("\"Wayanad\""))
+    assertTrue(rings[1].query.contains("\"Kerala\""))
+    assertEquals(NewsScope.INDIA, rings.last().scope)
+    assertTrue(rings.last().query.contains("flood"))
     // Free plan caps max at 10 — the client never asks for more.
     assertEquals(10, NewsQueryFactory.MAX_ARTICLES_PER_REQUEST)
   }
+
+  /**
+   * A place as the runtime resolver would return it. The tests name the place
+   * they use instead of relying on a district compiled into the app.
+   */
+  private fun testPlace() =
+    com.example.data.location.ResolvedPlace(
+      district = "Wayanad",
+      state = "Kerala",
+      country = "India",
+      source = "test resolver"
+    )
+
+  private fun threeRings() = NewsQueryFactory.buildQueries(testPlace())
 
   // ---------------------------------------------------------- JSON parse
   @Test
@@ -142,13 +161,18 @@ class NewsPipelineUnitTest {
   fun `presentation maps articles to honest dispatch cards with urls`() {
     val now = 1_800_000_000_000L
     val a = article("id-1", "Severe flood headline", now - 3_600_000L, NewsScope.MY_AREA, category = NewsCategory.SEVERE_ALERTS)
-    val cards = NewsPresentation.toFeedDispatches(listOf(a), now)
+    val cards = NewsPresentation.toFeedDispatches(listOf(a), now, testPlace())
     assertEquals(1, cards.size)
     val c = cards[0]
     assertEquals("https://example.com/story", c.url)
     assertTrue(c.issuedTime.contains("1h ago"))
-    assertTrue(c.location.contains("Idukki District"))
+    // Ring label comes from the resolved place, never from a constant.
+    assertTrue(c.location.contains("Wayanad"))
     assertEquals("Read Full Story", c.actionLabel)
+
+    // With no resolved place the card never names a district it was not told.
+    val unresolved = NewsPresentation.toFeedDispatches(listOf(a), now)[0]
+    assertTrue(unresolved.location.contains("not resolved"))
   }
 
   @Test
@@ -242,7 +266,7 @@ class NewsPipelineUnitTest {
       apiKeyProvider = { "real-key" },
       clock = { now }
     )
-    val feed = repo.refresh()
+    val feed = repo.refresh(threeRings())
     assertEquals(3, feed.articles.size)
     assertEquals("a1", feed.articles[0].id)
     assertFalse(feed.isFromCache)
@@ -273,7 +297,7 @@ class NewsPipelineUnitTest {
       apiKeyProvider = { "real-key" },
       clock = { now }
     )
-    val feed = repo.refresh()
+    val feed = repo.refresh(threeRings())
     // Quota on the first scope -> cascade stops, cache serves the district feed.
     assertNotNull(feed.error)
     assertEquals(NewsErrorKind.QUOTA_EXCEEDED, feed.error!!.kind)
@@ -319,7 +343,7 @@ class NewsPipelineUnitTest {
       apiKeyProvider = { "real-key" },
       clock = { now }
     )
-    val feed = repo.ensureLoaded()
+    val feed = repo.ensureLoaded(threeRings())
     assertEquals(1, feed.articles.size)
     assertTrue(feed.isFromCache)
   }
@@ -369,8 +393,12 @@ class NewsPipelineUnitTest {
     private val failIfCalled: Boolean = false
   ) : GNewsService {
     var calls = 0
-    override suspend fun search(scope: NewsScope, apiKey: String): GNewsCall {
+    /** Queries the repository actually asked for (proves the rings are dynamic). */
+    val queries = mutableListOf<String>()
+
+    override suspend fun search(scope: NewsScope, query: String, apiKey: String): GNewsCall {
       calls++
+      queries += query
       check(!failIfCalled) { "network must not be called in this test" }
       return when (scope) {
         NewsScope.MY_AREA ->

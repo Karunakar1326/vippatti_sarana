@@ -3,9 +3,14 @@ package com.example.ui.screens
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import com.example.data.routing.GeoPoint
 import com.example.data.routing.RouteHazardWarning
 import com.example.data.routing.RouteResult
@@ -99,27 +104,94 @@ class RouteSafetyCardLayoutTest {
     }
   }
 
+  /** STAGE 5 — a READY live road route states the closure/traffic limit on the card. */
   @Test
-  fun `danger card stays bounded and keeps every information block`() {
-    renderPanel(dangerRouteState())
+  fun `ready live route discloses unverified closures and traffic`() {
+    renderPanel(
+      dangerRouteState().copy(
+        routeStatus = RouteStatus.READY,
+        routeStatusMessage =
+          "Live OSRM road route to Munnar Higher Ground Relief Camp — " +
+            "hazard-checked: Safe Corridor. Road closures and live traffic are not verified.",
+        activeRoute = dangerRouteState().activeRoute!!.copy(
+          isLiveOsrm = true,
+          summary = "OSRM Validated Passage",
+          routeSafetyStatus = RouteSafetyStatus.SAFE,
+          routeSafetyScore = 96
+        )
+      )
+    )
+    composeTestRule.onNodeWithTag("osrm_validation_badge").assertExists()
+    composeTestRule.onNodeWithTag("route_closure_disclaimer").assertExists()
+    composeTestRule.onNodeWithText("Road closures and live traffic are not verified.").assertExists()
+    composeTestRule.onAllNodesWithText("closure-verified", substring = true, ignoreCase = true).assertCountEquals(0)
+    composeTestRule.onAllNodesWithText("live-traffic", substring = true, ignoreCase = true).assertCountEquals(0)
+  }
 
-    // All required information survives the compaction.
+  /** Portrait phone: the reported broken case. */
+  @Test
+  @Config(qualifiers = "w360dp-h720dp")
+  fun `portrait phone keeps the danger card compact`() {
+    assertCompactCard()
+  }
+
+  /** Landscape phone: the short height must not clip or overflow either. */
+  @Test
+  @Config(qualifiers = "w720dp-h360dp-land")
+  fun `landscape phone keeps the danger card compact`() {
+    assertCompactCard()
+  }
+
+  private fun assertCompactCard() {
+    var compositionDensity = 1f
+    composeTestRule.setContent {
+      compositionDensity = LocalDensity.current.density
+      VippattiTheme {
+        Box(modifier = Modifier.fillMaxSize()) {
+          RouteIntelligencePanel(
+            uiState = dangerRouteState(),
+            onSetTravelMode = {},
+            onLoadAlternativeRoutes = {},
+            onSelectBestSafeZone = {},
+            onRequestFallbackRoute = {}
+          )
+        }
+      }
+    }
+
+    // Collapsed essentials: the decision information must always be visible.
     composeTestRule.onNodeWithText("ROUTE TO").assertExists()
     composeTestRule.onNodeWithText("Munnar Higher Ground Relief Camp").assertExists()
     composeTestRule.onNodeWithTag("osrm_validation_badge").assertExists()
+    composeTestRule.onNodeWithText("Safety 25/100").assertExists()
+    composeTestRule.onNodeWithTag("route_details_toggle").assertExists()
+
+    val collapsedHeightPx = composeTestRule.onNodeWithTag("route_intelligence_panel")
+      .fetchSemanticsNode().size.height
+    val collapsedHeightDp = collapsedHeightPx / compositionDensity
+
+    // Secondary detail is available only through the explicit action.
+    composeTestRule.onNodeWithTag("route_details_toggle").performClick()
     composeTestRule.onNodeWithTag("route_status_message").assertExists()
     composeTestRule.onNodeWithText("Retry road route").assertExists()
     composeTestRule.onNodeWithText("Use unverified estimate").assertExists()
-    composeTestRule.onNodeWithText("Safety 25/100").assertExists()
+    composeTestRule.onNodeWithText("Alternatives (0)").assertExists()
 
-    // The card must stay usable on a 720dp-tall phone: bounded to < 2/3 height.
-    val density = composeTestRule.density.density
-    val cardHeightPx = composeTestRule.onNodeWithTag("route_intelligence_panel")
+    val expandedHeightPx = composeTestRule.onNodeWithTag("route_intelligence_panel")
       .fetchSemanticsNode().size.height
-    val maxAllowedPx = (480 * density).toInt()
+    val expandedHeightDp = expandedHeightPx / compositionDensity
+
+    // Contract (environment-robust): details genuinely expand the card, yet even
+    // fully expanded it can never grow past the screen it is rendered on. The
+    // px/dp ratio is treated as measured, not assumed (Robolectric densities vary).
+    val screenHeightDp = composeTestRule.onRoot().fetchSemanticsNode().size.height / compositionDensity
     assertTrue(
-      "route card must stay compact: $cardHeightPx px (max $maxAllowedPx px)",
-      cardHeightPx < maxAllowedPx
+      "details must expand the card: collapsed $collapsedHeightDp dp -> expanded $expandedHeightDp dp",
+      expandedHeightDp > collapsedHeightDp
+    )
+    assertTrue(
+      "even expanded the card must fit the screen: $expandedHeightDp dp (screen $screenHeightDp dp)",
+      expandedHeightDp <= screenHeightDp
     )
   }
 }

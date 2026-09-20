@@ -296,6 +296,12 @@ object PilotRegionData {
       locationNote = "Kizhakkethala, Idukki, Kerala — ~8.0 km from rainfall cell",
       capacityTotal = 300,
       capacityCurrent = 75,
+      // SIMULATED demo capacity inputs (same labelled demo record as the rest
+      // of this network): they let the carrying-capacity engine show a
+      // space-limited site, where 225 free spaces is the binding constraint.
+      landAreaSquareMeters = 1_200.0,
+      waterLitresPerDay = 9_000.0,
+      toiletCount = 6,
       waterAvailable = true,
       foodAvailable = true,
       electricityAvailable = true,
@@ -316,6 +322,11 @@ object PilotRegionData {
       locationNote = "Shimla, Himachal Pradesh — ~6.1 km from slide watch",
       capacityTotal = 350,
       capacityCurrent = 90,
+      // SIMULATED demo inputs chosen to be water-limited (2,400 L/day ≈ 160
+      // people) so the limiting-resource output is genuinely different here.
+      landAreaSquareMeters = 900.0,
+      waterLitresPerDay = 2_400.0,
+      toiletCount = 4,
       waterAvailable = true,
       foodAvailable = true,
       electricityAvailable = true,

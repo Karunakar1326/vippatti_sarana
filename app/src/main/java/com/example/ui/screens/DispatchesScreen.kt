@@ -65,7 +65,9 @@ import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
+import com.example.data.model.DataStatus
 import com.example.data.news.NewsPresentation
+import com.example.data.news.ringLabel
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -105,6 +107,10 @@ fun DispatchesScreen(
   onSelectCategory: (String) -> Unit,
   onNavigateToEvacRoute: () -> Unit,
   onNavigateTab: (ScreenTab) -> Unit,
+  onToggleHistoricalLayer: () -> Unit,
+  onHistoricalFiltersChange: (com.example.data.historical.HistoricalFilters) -> Unit,
+  onClearHistoricalFilters: () -> Unit,
+  onSelectHistoricalEvent: (com.example.data.historical.HistoricalDisasterEvent) -> Unit,
   modifier: Modifier = Modifier
 ) {
   val context = LocalContext.current
@@ -219,6 +225,9 @@ fun DispatchesScreen(
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically
         ) {
+          // One honest indicator colour for the whole banner: green only when
+          // the news record is live, amber for cached, red for a failed feed.
+          val newsStatusColor = com.example.ui.components.dataStatusColor(uiState.newsStatus)
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -229,12 +238,12 @@ fun DispatchesScreen(
                 modifier = Modifier
                   .size(10.dp)
                   .scale(pulseScale)
-                  .background(NeonEmerald.copy(alpha = 0.4f), CircleShape)
+                  .background(newsStatusColor.copy(alpha = 0.4f), CircleShape)
               )
               Box(
                 modifier = Modifier
                   .size(8.dp)
-                  .background(NeonEmerald, CircleShape)
+                  .background(newsStatusColor, CircleShape)
               )
             }
 
@@ -243,11 +252,9 @@ fun DispatchesScreen(
                 text = uiState.newsConnectionStateLabel,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
-                color = if (uiState.newsConnectionStateLabel.startsWith("ONLINE")) {
-                  NeonEmerald
-                } else {
-                  TacticalCyan
-                },
+                // Status comes from the news record itself (live / cached / error),
+                // never from sniffing the label text.
+                color = newsStatusColor,
                 letterSpacing = 0.8.sp
               )
               Text(
@@ -255,6 +262,12 @@ fun DispatchesScreen(
                 fontSize = 12.sp,
                 color = TacticalOnSurfaceVariant,
                 maxLines = 1
+              )
+              Text(
+                text = uiState.newsScopeNote,
+                fontSize = 10.sp,
+                color = TacticalOnSurfaceVariant,
+                maxLines = 2
               )
               Text(
                 text = "GNews free plan: articles appear up to 12h after publication • not official alerts",
@@ -546,7 +559,8 @@ fun DispatchesScreen(
                   )
                 }
                 Text(
-                  text = "${hero.scope.label} • ${hero.sourceName}",
+                  // Ring label from the place resolved at runtime - never a constant.
+                text = "${hero.scope.ringLabel(uiState.resolvedPlace)} • ${hero.sourceName}",
                   fontSize = 12.sp,
                   color = TacticalOnSurfaceVariant
                 )
@@ -689,7 +703,9 @@ fun DispatchesScreen(
               text = when {
                 uiState.isSyncing -> "Fetching live disaster news from GNews…"
                 uiState.newsError != null -> uiState.newsError.userMessage
-                else -> "No severe disaster news loaded yet — tap Sync to pull live articles from GNews (Idukki → Kerala → India)"
+                // Scope text is the runtime-resolved one; no district is assumed.
+                else -> "No severe disaster news loaded yet — tap Sync to pull live " +
+                  "GNews articles. ${uiState.newsScopeNote}"
               },
               fontSize = 13.sp,
               color = TacticalOnSurfaceVariant,
@@ -719,12 +735,13 @@ fun DispatchesScreen(
       }
     }
 
-    // 6. Live Feed Dispatches Section Title
+    // 6. Feed Dispatches Section Title (status-gated, never unconditionally LIVE)
     item {
       Row(
         modifier = Modifier
           .fillMaxWidth()
-          .padding(horizontal = 16.dp, vertical = 8.dp),
+          .padding(horizontal = 16.dp, vertical = 8.dp)
+          .testTag("feed_dispatches_header"),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
@@ -732,13 +749,19 @@ fun DispatchesScreen(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
+          // STAGE 7 — the dot follows the feed's real status (green only for a
+          // live fetch, amber for cache, red for failure), exactly like the
+          // sync banner above: a cached or failed feed must never wear LIVE.
           Box(
             modifier = Modifier
               .size(8.dp)
-              .background(NeonEmerald, CircleShape)
+              .background(
+                com.example.ui.components.dataStatusColor(uiState.newsStatus),
+                CircleShape
+              )
           )
           Text(
-            text = "LIVE FEED DISPATCHES",
+            text = "FEED DISPATCHES",
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             color = TacticalOnSurface,
@@ -746,7 +769,17 @@ fun DispatchesScreen(
           )
         }
         Text(
-          text = if (uiState.isSyncing) "Syncing…" else "LIVE VIA GNEWS",
+          text = if (uiState.isSyncing) {
+            "Syncing…"
+          } else {
+            when (uiState.newsStatus) {
+              DataStatus.SUCCESS -> "LIVE VIA GNEWS"
+              DataStatus.STALE -> "CACHED FEED"
+              DataStatus.ERROR -> "FEED UNREACHABLE"
+              DataStatus.LOADING -> "SYNCING"
+              else -> "NOT SYNCED"
+            }
+          },
           fontSize = 11.sp,
           color = TacticalOnSurfaceVariant
         )
@@ -766,7 +799,11 @@ fun DispatchesScreen(
         NewsPresentation.matchesCategory(article.category, activeCategory)
       }
     }
-    val filteredDispatches = NewsPresentation.toFeedDispatches(visibleArticles, System.currentTimeMillis())
+    val filteredDispatches = NewsPresentation.toFeedDispatches(
+      visibleArticles,
+      System.currentTimeMillis(),
+      uiState.resolvedPlace
+    )
 
     if (filteredDispatches.isEmpty()) {
       item {
@@ -803,6 +840,19 @@ fun DispatchesScreen(
           }
         }
       }
+    }
+
+    // 8. HISTORICAL DISASTER INTELLIGENCE (EM-DAT archive). Deliberately its
+    // own section: archived events are evidence, not live dispatches, and they
+    // never appear in the live feed above.
+    item {
+      HistoricalIntelligencePanel(
+        uiState = uiState,
+        onToggleLayer = onToggleHistoricalLayer,
+        onFiltersChange = onHistoricalFiltersChange,
+        onClearFilters = onClearHistoricalFilters,
+        onSelectEvent = onSelectHistoricalEvent
+      )
     }
 
     items(filteredDispatches) { dispatch ->

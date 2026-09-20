@@ -8,7 +8,9 @@ import com.example.data.disaster.EventConfidence
 import com.example.data.disaster.EventDetails
 import com.example.data.disaster.EventGeometry
 import com.example.data.disaster.EventOrigin
+import com.example.data.disaster.FireIntensityScale
 import com.example.data.disaster.IndiaGeo
+import com.example.data.disaster.ProviderFailureKind
 import com.example.data.disaster.ProviderResult
 import com.example.data.model.HazardSeverity
 import kotlinx.coroutines.Dispatchers
@@ -45,10 +47,12 @@ class FirmsFireProvider(
   override suspend fun fetchIndiaEvents(): ProviderResult = withContext(Dispatchers.IO) {
     val mapKey = mapKeyProvider().trim()
     if (mapKey.isBlank() || mapKey == FIRMS_PLACEHOLDER_KEY) {
+      // UNCONFIGURED, not failed: this optional source simply has no key in
+      // this build. The UI must not show it as an error or as live data.
       return@withContext ProviderResult.Failure(
-        "NASA FIRMS fire layer unavailable — no MAP_KEY configured. " +
+        reason = "NASA FIRMS fire layer unavailable — no MAP_KEY configured. " +
           "Request a free key and add FIRMS_MAP_KEY to app/.env.",
-        isAuthProblem = true
+        kind = ProviderFailureKind.UNCONFIGURED
       )
     }
     val url = "https://firms.modaps.eosdis.nasa.gov/api/area/csv/" +
@@ -62,9 +66,11 @@ class FirmsFireProvider(
       httpClient.newCall(request).execute().use { response ->
         val body = response.body?.string()
         if (response.code == 403) {
+          // A key IS configured and the provider refused it: authentication
+          // failure, distinct from "not configured".
           return@withContext ProviderResult.Failure(
-            "NASA FIRMS rejected the MAP_KEY (HTTP 403) — verify FIRMS_MAP_KEY.",
-            isAuthProblem = true
+            reason = "NASA FIRMS rejected the MAP_KEY (HTTP 403) — verify FIRMS_MAP_KEY.",
+            kind = ProviderFailureKind.AUTHENTICATION_FAILED
           )
         }
         if (!response.isSuccessful || body.isNullOrBlank()) {
@@ -151,7 +157,13 @@ object FirmsCsvParser {
         geometry = EventGeometry.Point(lat, lon),
         latitude = lat,
         longitude = lon,
-        severity = HazardSeverity.MODERATE,
+        // Severity comes from the provider's own FRP measurement and confidence
+        // flag (documented thresholds in FireIntensityScale) instead of a fixed
+        // MODERATE for every detection.
+        severity = FireIntensityScale.severityFor(
+          frpMegawatts = if (frpIdx >= 0 && frpIdx < cells.size) cells[frpIdx].toDoubleOrNull() else null,
+          confidence = mapConfidence(confidenceRaw)
+        ),
         confidence = mapConfidence(confidenceRaw),
         confidenceNote = if (confidenceRaw.isBlank()) null else "detection confidence $confidenceRaw",
         observedAtMillis = observedAt,
