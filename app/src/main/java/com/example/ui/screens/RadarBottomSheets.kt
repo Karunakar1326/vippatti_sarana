@@ -27,8 +27,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.model.DataClassification
+import com.example.data.model.DataStatus
+import com.example.data.model.RecordStamp
 import com.example.data.model.SafeZone
 import com.example.data.routing.OsrmRoutingService
+import com.example.ui.components.StampLine
+import com.example.ui.components.UnavailablePanel
 import com.example.ui.theme.NeonEmerald
 import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.TacticalOnSurfaceVariant
@@ -112,6 +117,8 @@ internal fun ExpandedSheetContent(
   onOpenIncidentReport: () -> Unit = {},
   /** Explicit opt-in for the unverified offline straight-line estimate. */
   onRequestFallbackRoute: () -> Unit = {},
+  /** Retries the live weather reading (used by the provenance panel). */
+  onRetryWeather: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   Column(
@@ -135,8 +142,36 @@ internal fun ExpandedSheetContent(
       onSelectSafeZone = onSelectSafeZone
     )
 
-    // 3. COMPACT WEATHER ROW (live Open-Meteo feed).
-    CompactWeatherRow(weather = uiState.weather, isLive = uiState.isWeatherLive)
+    // 3. COMPACT WEATHER ROW (live Open-Meteo feed, status-labelled) plus its
+    //    provenance line: source, when the reading was actually retrieved, and
+    //    a real error message when the refresh failed. "Time unknown" until a
+    //    reading exists - no fabricated fetch time.
+    CompactWeatherRow(weather = uiState.weather, status = uiState.weatherStatus)
+    StampLine(
+      stamp = RecordStamp(
+        sourceName = "Open-Meteo (keyless)",
+        retrievedAtMillis = uiState.weatherRetrievedAtMillis,
+        // Provider observation time from the payload; absent -> "Time unknown".
+        eventAtMillis = uiState.weather.observedAtMillis.takeIf { it > 0L },
+        coverage = "current map location",
+        status = uiState.weatherStatus,
+        errorMessage = uiState.weatherErrorMessage,
+        classification = DataClassification.OBSERVED
+      ),
+      nowMillis = System.currentTimeMillis(),
+      modifier = Modifier.padding(horizontal = 14.dp)
+    )
+    // Honest stale/unavailable/error panel with a working retry. LOADING and
+    // SUCCESS render nothing extra - there is nothing to explain.
+    if (uiState.weatherStatus != DataStatus.SUCCESS && uiState.weatherStatus != DataStatus.LOADING) {
+      UnavailablePanel(
+        status = uiState.weatherStatus,
+        what = "Weather for the current map location",
+        errorMessage = uiState.weatherErrorMessage,
+        onRetry = onRetryWeather,
+        modifier = Modifier.padding(horizontal = 14.dp)
+      )
+    }
 
     // 4. ROUTE INTELLIGENCE + NAVIGATION CONTROLS.
     RouteIntelligencePanel(

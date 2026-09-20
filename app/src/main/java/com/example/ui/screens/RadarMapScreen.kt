@@ -144,9 +144,13 @@ fun RadarMapScreen(
   onToggleLayer: (DisasterLayer) -> Unit,
   onOpenIncidentReport: () -> Unit,
   onOpenDisasterEventDetail: (DisasterEvent) -> Unit,
+  /** Opens the HISTORICAL (EM-DAT) record sheet for a tapped archive marker. */
+  onOpenHistoricalEventDetail: (com.example.data.historical.HistoricalDisasterEvent) -> Unit = {},
   onToggleMockData: () -> Unit = {},
   /** Explicit opt-in for the unverified offline straight-line estimate. */
   onRequestFallbackRoute: () -> Unit = {},
+  /** Retry the live Open-Meteo weather reading after a stale/failed attempt. */
+  onRetryWeather: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   var isSheetExpanded by remember { mutableStateOf(true) }
@@ -202,6 +206,10 @@ fun RadarMapScreen(
       disasterEvents = uiState.disasterEvents,
       enabledLayers = uiState.enabledLayers,
       onDisasterEventTapped = onOpenDisasterEventDetail,
+      // HISTORICAL (EM-DAT): only when the operator enables the layer, and only
+      // records with the dataset's own coordinates. Never a current hazard.
+      historicalEvents = uiState.historicalMappableEvents,
+      onHistoricalEventTapped = onOpenHistoricalEventDetail,
       modifier = Modifier.fillMaxSize(),
       topOverlayPadding = topOverlayPadding + 8.dp,
       bottomOverlayPadding = animatedSheetHeight
@@ -343,6 +351,7 @@ fun RadarMapScreen(
           onLoadAlternativeRoutes = onLoadAlternativeRoutes,
           onOpenIncidentReport = onOpenIncidentReport,
           onRequestFallbackRoute = onRequestFallbackRoute,
+          onRetryWeather = onRetryWeather,
           modifier = Modifier.weight(1f)
         )
       }

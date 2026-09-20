@@ -1,7 +1,10 @@
 # Vippatti Sarana — Architecture Map
 
-Disaster-relief pilot for Idukki district, Kerala, India. Single-activity Jetpack
-Compose app with one ViewModel and honest, labeled data sources.
+All-India disaster-relief decision-support app. Single-activity Jetpack
+Compose app with one ViewModel and honest, labeled data sources. Idukki
+district, Kerala appears only as configurable pilot/demo data (sample shelter
+network and demonstration records), not as a scope limit: providers query
+India-wide bounding boxes and the resolved user location drives scoping.
 
 ## Primary flow (single pipeline, no duplicates)
 

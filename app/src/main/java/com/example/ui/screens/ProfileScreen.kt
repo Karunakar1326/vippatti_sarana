@@ -146,7 +146,10 @@ internal fun DistressSignalCenter(
                     .background(NeonEmerald, CircleShape)
                 )
                 Text(
-                  text = "LIVE RELAY ACTIVE",
+                  // STAGE 7 — local-only honesty: this build has no
+                  // relief-network backend (see RELAY_CHANNEL), so the badge
+                  // must never read as a live transmission relay.
+                  text = "LOCAL SOS — NOT TRANSMITTED",
                   fontSize = 10.sp,
                   fontWeight = FontWeight.Bold,
                   color = Color.White,
@@ -163,7 +166,8 @@ internal fun DistressSignalCenter(
               )
 
               Text(
-                text = "Dispatches real-time coordinates, battery level & critical medical tags.",
+                text = "Records live GPS, battery & medical tags on this device only. " +
+                  "Nothing is transmitted — dial 112 for response.",
                 fontSize = 12.sp,
                 color = Color.White.copy(alpha = 0.9f),
                 lineHeight = 16.sp,
@@ -207,16 +211,17 @@ internal fun DistressSignalCenter(
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-              text = "BROADCAST SOS WITH LIVE GPS",
+              text = "RECORD SOS WITH LIVE GPS",
               fontSize = 13.sp,
               fontWeight = FontWeight.Black,
               letterSpacing = 0.4.sp
             )
           }
 
-          // REPORT MY SITUATION — voice/form/photo channel to the NDRF
-          // dispatcher. Deliberately separate from the SOS broadcast: no
-          // distress signal is armed, no confirmation gate required.
+          // REPORT MY SITUATION — voice/form/photo channel into the LOCAL
+          // device record (no relief-network backend exists, so nothing
+          // reaches any dispatcher). Deliberately separate from the SOS
+          // record: no distress signal is armed, no confirmation gate required.
           OutlinedButton(
             onClick = onOpenSituationReport,
             shape = RoundedCornerShape(12.dp),
@@ -1158,6 +1163,112 @@ fun ProfileScreen(
               color = NeonEmerald,
               fontWeight = FontWeight.Bold
             )
+          }
+          // Population & demand: baseline, affected and the figure actually used
+          // for capacity assessment — each labelled for what it is.
+          Text(
+            text = "POPULATION & DEMAND",
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Black,
+            color = TacticalCyan,
+            letterSpacing = 0.6.sp
+          )
+          Text(
+            text = "Baseline population: ${uiState.baselinePopulationLabel}",
+            fontSize = 11.sp,
+            color = TacticalOnSurface
+          )
+          Text(
+            text = "Affected population: ${uiState.affectedPopulationLabel}",
+            fontSize = 11.sp,
+            color = TacticalOnSurface
+          )
+          Text(
+            text = "Relocation demand: ${uiState.relocationDemandLabel}",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = when (uiState.populationResolution?.demand?.state) {
+              com.example.data.capacity.ResourceDataState.SIMULATED -> TacticalCyan
+              com.example.data.capacity.ResourceDataState.USER_DECLARED -> WarningAmber
+              com.example.data.capacity.ResourceDataState.NOT_PROVIDED -> TacticalOnSurfaceVariant
+              else -> NeonEmerald
+            }
+          )
+          uiState.populationResolution?.let { resolution ->
+            resolution.demand.referenceMillis?.let { reference ->
+              Text(
+                text = "Demand reference: " +
+                  com.example.data.news.NewsPresentation.relativeAge(reference, System.currentTimeMillis()) +
+                  " (${resolution.demand.source})",
+                fontSize = 9.sp,
+                color = TacticalOnSurfaceVariant
+              )
+            } ?: Text(
+              text = "Demand reference time: not stated by the source (${resolution.demand.source})",
+              fontSize = 9.sp,
+              color = TacticalOnSurfaceVariant
+            )
+            Text(
+              text = "Population source status: ${resolution.statusLabel}",
+              fontSize = 9.sp,
+              fontWeight = FontWeight.Bold,
+              color = TacticalOnSurfaceVariant
+            )
+          }
+          // A failed fetch is stated plainly; the previous figures stay in use.
+          uiState.populationSourceError?.let { error ->
+            Text(
+              text = error,
+              fontSize = 9.sp,
+              color = WarningAmber,
+              lineHeight = 12.sp
+            )
+          }
+
+          // Carrying-capacity verdict for the assigned destination: required vs
+          // effective capacity, limiting resource and the honest reason.
+          plan.capacityAssessment?.let { assessment ->
+            Text(
+              text = "Capacity check: ${assessment.status.label.uppercase()} — " +
+                "required ${assessment.demand.people?.toString() ?: "not available"}, " +
+                "effective ${assessment.effectiveCapacity?.toString() ?: "not available"}, " +
+                "limiting ${assessment.limitingResource?.label ?: "not identified"}",
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              color = when (assessment.status) {
+                com.example.data.capacity.FeasibilityStatus.FEASIBLE -> NeonEmerald
+                com.example.data.capacity.FeasibilityStatus.INFEASIBLE -> EmergencyRedBright
+                com.example.data.capacity.FeasibilityStatus.SIMULATED -> TacticalCyan
+                com.example.data.capacity.FeasibilityStatus.INSUFFICIENT_DATA -> WarningAmber
+              }
+            )
+          }
+          if (plan.feasibilityNote != null) {
+            Text(
+              text = plan.feasibilityNote,
+              fontSize = 10.sp,
+              color = TacticalOnSurfaceVariant,
+              lineHeight = 14.sp
+            )
+          }
+          // Ranked sites the capacity check skipped, with their own shortfall.
+          if (plan.skippedSites.isNotEmpty()) {
+            Text(
+              text = "Capacity-checked sites not assigned:",
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Bold,
+              color = WarningAmber
+            )
+            plan.skippedSites.forEach { skipped ->
+              Text(
+                text = "• ${skipped.siteName} — ${skipped.reason}" +
+                  "${skipped.status?.let { status -> " (${status.status.label}, limiting " +
+                    "${status.limitingResource?.label?.lowercase() ?: "not identified"})" } ?: ""}",
+                fontSize = 10.sp,
+                color = TacticalOnSurfaceVariant,
+                lineHeight = 14.sp
+              )
+            }
           }
           if (plan.overflowNote != null) {
             Text(

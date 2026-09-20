@@ -1,0 +1,13 @@
+{
+  "# of records": "740",
+  "File creation": "Fri, 18 Sep 2026 15:01:31 UTC",
+  "Glossary": "https://doc.emdat.be/docs/data-structure-and-content/emdat-public-table/",
+  "Source": "EM-DAT, CRED / UCLouvain, Brussels, Belgium",
+  "Table type": "public_emdat_custom_request",
+  "Version": "2026-09-11",
+  "prepared_record_count": "740",
+  "sheets": [
+    "EM-DAT Data",
+    "EM-DAT Info"
+  ]
+}

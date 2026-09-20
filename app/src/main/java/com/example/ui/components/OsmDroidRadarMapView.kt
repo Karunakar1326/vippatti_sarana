@@ -62,6 +62,7 @@ import com.example.data.disaster.DisasterLayer
 import com.example.data.disaster.DisasterSource
 import com.example.data.disaster.DisasterType
 import com.example.data.disaster.EventGeometry
+import com.example.data.disaster.FireIntensityScale
 import com.example.data.disaster.MarkerGeneralizer
 import com.example.data.model.HazardSeverity
 import com.example.data.model.HazardZone
@@ -149,6 +150,14 @@ fun OsmDroidRadarMapView(
   enabledLayers: Set<com.example.data.disaster.DisasterLayer> = com.example.data.disaster.DisasterLayer.entries.toSet(),
   /** Tap on a rendered disaster event marker. */
   onDisasterEventTapped: (com.example.data.disaster.DisasterEvent) -> Unit = {},
+  /**
+   * HISTORICAL (EM-DAT) records to draw. The ViewModel already filters these to
+   * "layer enabled + has source coordinates", so an empty list means "draw
+   * nothing" and no placeholder is ever used.
+   */
+  historicalEvents: List<com.example.data.historical.HistoricalDisasterEvent> = emptyList(),
+  /** Tap on a historical marker — opens the historical sheet, not a hazard one. */
+  onHistoricalEventTapped: (com.example.data.historical.HistoricalDisasterEvent) -> Unit = {},
   modifier: Modifier = Modifier,
   // Overlay-aware spacing so the floating map controls / attribution banner
   // never sit underneath the screen's risk strip, HUD or bottom sheet on any
@@ -237,6 +246,11 @@ fun OsmDroidRadarMapView(
     enabledLayers.contains(DisasterLayer.USER_REPORTS)
   ) {
     mapState.deployDisasterEvents(disasterEvents, enabledLayers, onDisasterEventTapped)
+  }
+  // HISTORICAL (EM-DAT) layer: off by default, and only ever receives records
+  // that carry the dataset's own coordinates.
+  LaunchedEffect(historicalEvents) {
+    mapState.deployHistoricalEvents(historicalEvents, onHistoricalEventTapped)
   }
 
   // Draws the OSRM evacuation polyline whenever a route is computed, and
@@ -501,6 +515,9 @@ class OsmMapControllerHolder(
   private var currentTravelMode: String = "foot"
   private var currentRoutePolyline: Polyline? = null
 
+  /** Archived (EM-DAT) markers — kept separate from every live overlay list. */
+  private val historicalEventOverlays = mutableListOf<PulsingZoneOverlay>()
+
   // Large pulsing zone overlays (hazards + safe zones + disaster events).
   private val hazardZoneOverlays = mutableListOf<PulsingZoneOverlay>()
   private val safeZoneOverlays = mutableListOf<PulsingZoneOverlay>()
@@ -702,25 +719,71 @@ class OsmMapControllerHolder(
       // Zoom-based level-of-detail rule comes from the layer itself.
       if (layer in selected && layer.isVisibleAt(zoom, enabled = true)) event else null
     }
-    // Overview clustering — collapses dense fire detections at national zoom.
-    val clustered = MarkerGeneralizer.generalize(renderable, zoom)
+    // Overview clustering — collapses dense fire detections at national zoom
+    // and reports, per marker, how many detections it stands for and the
+    // strongest FRP measured among them.
+    val clustered = MarkerGeneralizer.clusters(renderable, zoom)
 
-    clustered.forEach { event ->
+    clustered.forEach { cluster ->
+      val event = cluster.representative
       val point = when (val g = event.geometry) {
         is EventGeometry.Point -> GeoPoint(g.lat, g.lon)
         is EventGeometry.MultiPoint -> g.points.firstOrNull()
         is EventGeometry.Line -> g.points.firstOrNull()
         is EventGeometry.Polygon -> g.ring.firstOrNull()
         is EventGeometry.RasterLayer -> null
+        // No source geometry -> no marker. The alert stays in the feed/detail UI.
+        is EventGeometry.Unlocated -> null
       } ?: return@forEach
+      // Marker size carries real intensity: the detection's own FRP plus the
+      // number of detections this marker represents, both bounded by
+      // FireIntensityScale.MAX_MARKER_SCALE. No measurement -> base size.
+      val scale = FireIntensityScale.markerScale(cluster.maxFrpMegawatts, cluster.memberCount)
       val overlay = PulsingZoneOverlay(
         center = OsmGeoPoint(point.lat, point.lon),
-        radiusMeters = DISASTER_MARKER_RADIUS_METERS,
+        radiusMeters = DISASTER_MARKER_RADIUS_METERS * scale,
         baseColorArgb = disasterMarkerColor(event),
         pulsePeriodMs = DISASTER_PULSE_MS,
         onZoneTapped = { onEventTapped(event) }
       )
       disasterEventOverlays.add(overlay)
+      view.overlays.add(0, overlay)
+    }
+    view.invalidate()
+  }
+
+  /**
+   * HISTORICAL EVENT LAYER (EM-DAT).
+   *
+   * Archived events are drawn ONLY when they carry the dataset's own
+   * coordinates, in a distinct muted tone with a slow pulse, so a 1987 flood
+   * cannot read as an active hazard zone. Idempotent like every other deploy
+   * call: stale overlays are removed first and the location overlay, the route
+   * polyline and every live hazard overlay are left untouched.
+   */
+  fun deployHistoricalEvents(
+    events: List<com.example.data.historical.HistoricalDisasterEvent>,
+    onEventTapped: (com.example.data.historical.HistoricalDisasterEvent) -> Unit
+  ) {
+    val view = mapView ?: return
+    historicalEventOverlays.forEach { overlay ->
+      overlay.stop()
+      view.overlays.remove(overlay)
+    }
+    historicalEventOverlays.clear()
+
+    events.filter { it.isMappable }.forEach { event ->
+      val lat = event.latitude ?: return@forEach
+      val lon = event.longitude ?: return@forEach
+      val overlay = PulsingZoneOverlay(
+        center = OsmGeoPoint(lat, lon),
+        radiusMeters = HISTORICAL_MARKER_RADIUS_METERS,
+        baseColorArgb = HISTORICAL_MARKER_COLOR,
+        // A deliberately slow pulse keeps it visually distinct from live alerts.
+        pulsePeriodMs = HISTORICAL_PULSE_MS,
+        onZoneTapped = { onEventTapped(event) }
+      )
+      historicalEventOverlays.add(overlay)
       view.overlays.add(0, overlay)
     }
     view.invalidate()
@@ -1018,6 +1081,12 @@ class OsmMapControllerHolder(
     private const val HAZARD_PULSE_MS = 2600L
     private const val SAFE_ZONE_PULSE_MS = 3600L
     private const val DISASTER_PULSE_MS = 2200L
+
+    /** Historical markers: muted slate, slower pulse, larger radius (archived
+     * events describe a whole district, not a measured point). */
+    private const val HISTORICAL_PULSE_MS = 5200L
+    private const val HISTORICAL_MARKER_RADIUS_METERS = 2600.0
+    private const val HISTORICAL_MARKER_COLOR = 0xFF64748B.toInt()
     private const val SAFE_ZONE_RADIUS_METERS = 900.0
     private const val DISASTER_MARKER_RADIUS_METERS = 1200.0
     /** Hard timeout for the GPS one-shot locate before reporting TIMEOUT. */

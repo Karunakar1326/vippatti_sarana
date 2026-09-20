@@ -82,6 +82,14 @@ data class SafeZone(
   val operatingStatus: String,
   val verificationStatus: String,
   val elevationNote: String,
+  /**
+   * Carrying-capacity inputs beyond bed spaces. All three are OPTIONAL: a
+   * registry record that does not state them leaves them null, which the
+   * capacity engine reports as "not provided" instead of zero.
+   */
+  val landAreaSquareMeters: Double? = null,
+  val waterLitresPerDay: Double? = null,
+  val toiletCount: Int? = null,
   val provenance: DataProvenance
 ) {
   val point: GeoPoint get() = GeoPoint(lat, lon)

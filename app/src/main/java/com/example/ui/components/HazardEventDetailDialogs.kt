@@ -92,6 +92,12 @@ fun HazardZoneDetailDialog(
               fontWeight = FontWeight.Bold,
               color = TacticalOnSurface
             )
+            com.example.ui.components.StatusBadge(
+              status = com.example.data.model.statusOf(
+                provenance = zone.provenance,
+                eventAtMillis = zone.lastUpdatedMillis.takeIf { it > 0L }
+              ).status
+            )
           }
           IconButton(onClick = onDismiss) {
             Icon(Icons.Default.Close, contentDescription = "Close", tint = TacticalOnSurfaceVariant)
@@ -310,6 +316,11 @@ fun DisasterEventDetailDialog(
               "Alert area polygon (${g.ring.size} vertices)"
             is com.example.data.disaster.EventGeometry.RasterLayer ->
               "Raster layer: ${g.title}"
+            // The source published no usable geometry: say so instead of showing
+            // a coordinate the provider never gave.
+            is com.example.data.disaster.EventGeometry.Unlocated ->
+              g.areaLabel?.takeIf { it.isNotBlank() }?.let { "$it (no polygon from source)" }
+                ?: "Not provided by source"
           }
         )
         when (val d = event.details) {
@@ -322,8 +333,12 @@ fun DisasterEventDetailDialog(
             DetailLine("Satellite", d.satellite.ifBlank { "Not available" })
             DetailLine("Instrument", d.instrument.ifBlank { "Not available" })
             DetailLine(
+              // The intensity word is derived from the provider's own FRP value
+              // (documented thresholds); a detection without FRP says so.
               "Fire radiative power",
-              d.frpMegawatts?.let { "$it MW" } ?: "Not available"
+              d.frpMegawatts?.let { frp ->
+                "$frp MW (${com.example.data.disaster.FireIntensityScale.of(frp).label} intensity)"
+              } ?: "Not available"
             )
             DetailLine("Day/night", d.dayNight ?: "Not available")
           }

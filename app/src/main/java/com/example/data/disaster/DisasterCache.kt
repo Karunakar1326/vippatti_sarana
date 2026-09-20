@@ -22,10 +22,10 @@ object DisasterCachePolicy {
     fetchedAtMillis > 0L && nowMillis - fetchedAtMillis in 0 until FRESH_TTL_MILLIS
 
   fun isRecent(fetchedAtMillis: Long, nowMillis: Long): Boolean =
-    fetchedAtMillis > 0L && nowMillis - fetchedAtMillis < RECENT_TTL_MILLIS
+    fetchedAtMillis > 0L && nowMillis - fetchedAtMillis in 0 until RECENT_TTL_MILLIS
 
   fun isUsable(fetchedAtMillis: Long, nowMillis: Long): Boolean =
-    fetchedAtMillis > 0L && nowMillis - fetchedAtMillis <= MAX_AGE_MILLIS
+    fetchedAtMillis > 0L && nowMillis - fetchedAtMillis in 0..MAX_AGE_MILLIS
 
   /** Freshness label for a single provider shard. */
   fun label(fetchedAtMillis: Long, nowMillis: Long): String = when {
@@ -154,6 +154,9 @@ internal fun serializeEvent(event: DisasterEvent): JSONObject = JSONObject()
   .put("line", serializePointList((event.geometry as? EventGeometry.Line)?.points))
   .put("rasterLayerId", (event.geometry as? EventGeometry.RasterLayer)?.layerId ?: "")
   .put("rasterLayerTitle", (event.geometry as? EventGeometry.RasterLayer)?.title ?: "")
+  // Unlocated records round-trip as their own geometry kind with the provider's
+  // area text; they are never rewritten as a coordinate.
+  .put("unlocatedArea", (event.geometry as? EventGeometry.Unlocated)?.areaLabel ?: "")
   .put("details", serializeDetails(event.details))
 
 internal fun deserializeEvent(obj: JSONObject): DisasterEvent? {
@@ -187,6 +190,9 @@ internal fun deserializeEvent(obj: JSONObject): DisasterEvent? {
         degradedGeometry(obj)
       }
     }
+    GeometryType.UNLOCATED.name -> EventGeometry.Unlocated(
+      obj.optString("unlocatedArea").takeIf { it.isNotBlank() }
+    )
     else -> degradedGeometry(obj)
   } ?: return null // unlocatable shard — dropped, never pinned to a fake spot
 
@@ -199,7 +205,7 @@ internal fun deserializeEvent(obj: JSONObject): DisasterEvent? {
     description = obj.optString("description"),
     geometry = geometry,
     latitude = (geometry as? EventGeometry.Point)?.lat,
-    longitude = (geometry as? EventGeometry.Point)?.lon,
+    longitude = (geometry as? EventGeometry.Point)?.lon, // stays null when UNLOCATED
     severity = severity,
     confidence = runCatching { EventConfidence.valueOf(obj.optString("confidence")) }
       .getOrDefault(EventConfidence.NOT_PROVIDED),

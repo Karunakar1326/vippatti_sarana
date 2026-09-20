@@ -133,6 +133,26 @@ object CapRssParser {
  * — live-validated against a real IMD alert (event, severity, urgency,
  * certainty, onset, expires, senderName, description, instruction, web link
  * and geographic polygon).
+ *
+ * STAGE 3 review notes (behaviour pinned by tests, not changed speculatively):
+ *  - Timestamps: `sent` is the primary publication time; the alert's own
+ *    `onset` / `effective` are the fallbacks (both real provider times).
+ *    `expires` drives EXPIRED/ACTIVE only and is never used as the observed
+ *    time. A payload with none of sent/onset/effective keeps the alert with
+ *    the retrieval time rather than dropping an official record.
+ *  - Severity: Extreme/Severe/Moderate/Minor map to the app scale; anything
+ *    else (including Unknown/blank) keeps the pre-existing MODERATE default.
+ *  - Geometry: a polygon-less alert stays Unlocated with the provider's area
+ *    text — never pinned to a placeholder coordinate, never a hazard zone.
+ *  - Attribution: senderName/urgency/certainty/web are preserved verbatim
+ *    ("Not provided by source" when absent); the record URL is the alert's
+ *    own `web` link, else the fetched CAP URL.
+ *  - Errors: missing identifier/event returns null (malformed — dropped);
+ *    network/timeout/malformed-RSS surface as provider Failure, never as
+ *    fabricated alerts. Conditional (ETag/If-None-Match) requests are NOT
+ *    implemented: the SACHET FetchXMLFile ETag guide describes a different
+ *    endpoint (sachet.ndma.gov.in) that this provider does not consume, and
+ *    its schema/behaviour is unverified from this environment.
  */
 object CapAlertParser {
 
@@ -152,9 +172,26 @@ object CapAlertParser {
     val info = fields["event"] ?: return null
     val areaDesc = fields["areadesc"].orDefaultIfBlank("Area description not provided by source")
 
-    val observedAt = parseCapTimestamp(fields["sent"])
+    // Observation-time chain (all values are the provider's own timestamps,
+    // never invented): `sent` first, then the alert's own `onset` /
+    // `effective` times. Only when the alert carries NONE of these does the
+    // parser fall back to the retrieval time — such a payload carries no
+    // publication timestamp at all, and dropping it would silently lose an
+    // official alert, so it is kept and its times read as "retrieved now".
+    // (Downstream, Stage-2 status rules still require a real observed time
+    // for a LIVE reading; retrieval recency alone never makes it live.)
+    val sentAt = parseCapTimestamp(fields["sent"])
+    val onsetAt = parseCapTimestamp(fields["onset"])
+    val effectiveAt = parseCapTimestamp(fields["effective"])
+    val observedAt = when {
+      sentAt > 0L -> sentAt
+      onsetAt > 0L -> onsetAt
+      effectiveAt > 0L -> effectiveAt
+      else -> 0L
+    }
     val expiresAt = parseCapTimestamp(fields["expires"])
     val now = System.currentTimeMillis()
+    val observedOrRetrievedAt = if (observedAt > 0L) observedAt else now
 
     val polygon = parsePolygon(fields["polygon"])
     val disasterType = classifyEvent(info, fields["category"] ?: "")
@@ -167,10 +204,15 @@ object CapAlertParser {
       title = fields["headline"]?.takeIf { it.isNotBlank() } ?: info,
       description = fields["description"]?.takeIf { it.isNotBlank() }
         ?: "Official alert description not provided by source.",
-      geometry = polygon ?: EventGeometry.Point(IndiaGeo.CENTER_LAT, IndiaGeo.CENTER_LON),
+      // HONESTY: an alert without a CAP polygon has NO known location. It is
+      // kept as an official alert with its stated area text and recorded as
+      // UNLOCATED - never pinned to India's centre as if that were the area.
+      geometry = polygon ?: EventGeometry.Unlocated(areaDesc),
+      latitude = null,
+      longitude = null,
       severity = mapSeverity(fields["severity"]),
-      observedAtMillis = if (observedAt > 0) observedAt else now,
-      updatedAtMillis = if (observedAt > 0) observedAt else now,
+      observedAtMillis = observedOrRetrievedAt,
+      updatedAtMillis = observedOrRetrievedAt,
       expiresAtMillis = expiresAt.takeIf { it > 0 },
       status = if (expiresAt in 1 until now) EventStatus.EXPIRED else EventStatus.ACTIVE,
       origin = EventOrigin.OBSERVED,
@@ -266,8 +308,8 @@ object CapAlertParser {
   private val FIELD_WHITELIST = setOf(
     "identifier", "sender", "sent", "status", "msgtype", "scope", "language",
     "category", "event", "responsetype", "urgency", "severity", "certainty",
-    "onset", "expires", "sendername", "headline", "description", "instruction",
-    "web", "areadesc", "polygon"
+    "onset", "effective", "expires", "sendername", "headline", "description",
+    "instruction", "web", "areadesc", "polygon"
   )
 }
 

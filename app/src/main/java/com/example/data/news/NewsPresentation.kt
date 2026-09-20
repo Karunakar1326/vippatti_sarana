@@ -15,7 +15,12 @@ import java.util.Locale
  */
 object NewsPresentation {
 
-  fun toFeedDispatches(articles: List<NewsArticle>, nowMillis: Long): List<FeedDispatch> =
+  fun toFeedDispatches(
+    articles: List<NewsArticle>,
+    nowMillis: Long,
+    /** Place resolved at runtime; null -> the label states the scope is unknown. */
+    place: com.example.data.location.ResolvedPlace? = null
+  ): List<FeedDispatch> =
     articles.map { article ->
       FeedDispatch(
         id = article.id,
@@ -32,7 +37,7 @@ object NewsPresentation {
         },
         title = article.title,
         description = truncate(article.description.ifBlank { article.content }, 220),
-        location = "${article.scope.label} • GNews",
+        location = "${article.scope.ringLabel(place)} • GNews",
         actionLabel = "Read Full Story",
         iconType = when (article.category) {
           NewsCategory.SEVERE_ALERTS, NewsCategory.ROAD_IMPACT -> DispatchIconType.FLOOD

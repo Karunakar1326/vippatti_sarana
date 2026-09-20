@@ -21,7 +21,7 @@ object NewsCachePolicy {
     fetchedAtMillis > 0L && nowMillis - fetchedAtMillis in 0 until FRESH_TTL_MILLIS
 
   fun isUsableStale(fetchedAtMillis: Long, nowMillis: Long): Boolean =
-    fetchedAtMillis > 0L && nowMillis - fetchedAtMillis <= MAX_AGE_MILLIS
+    fetchedAtMillis > 0L && nowMillis - fetchedAtMillis in 0..MAX_AGE_MILLIS
 }
 
 /** One cached scope shard. */

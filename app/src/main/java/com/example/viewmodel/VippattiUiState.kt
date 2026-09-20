@@ -6,6 +6,8 @@ import com.example.data.disaster.EmergencyContact
 import com.example.data.disaster.GoBagItem
 import com.example.data.disaster.MockDisasterRepository
 import com.example.data.disaster.PilotRegionData
+import com.example.data.disaster.dataStatus
+import com.example.data.model.DataStatus
 import com.example.data.model.UserProfile
 import com.example.data.disaster.WeatherMetrics
 import com.example.data.reports.EmergencyReport
@@ -176,9 +178,27 @@ data class VippattiUiState(
   val isSubmittingReport: Boolean = false,
   val lastReportReceipt: ReportReceipt? = null,
   val weather: WeatherMetrics = WeatherMetrics(),
-  /** True once a live Open-Meteo reading lands; false while weather is empty. */
-  val isWeatherLive: Boolean = false,
+  /**
+   * PHASE 2: weather carries the shared status vocabulary instead of a bare
+   * boolean. LOADING until the first attempt settles, SUCCESS for a reading
+   * fetched in this session, STALE when a live refresh failed but an earlier
+   * real reading is still shown, UNAVAILABLE when there is nothing to show.
+   */
+  val weatherStatus: DataStatus = DataStatus.LOADING,
+  /** When the shown reading was actually retrieved; null = never measured. */
+  val weatherRetrievedAtMillis: Long? = null,
+  /**
+   * Honest reason the last weather refresh failed (provider/exception detail),
+   * or null when it succeeded. Never a generic "error" placeholder.
+   */
+  val weatherErrorMessage: String? = null,
   val snackbarMessage: String? = null,
+
+  /**
+   * Place resolved AT RUNTIME from the user's coordinates (district/state names
+   * for query scoping and honest labels). Null = not resolved, never assumed.
+   */
+  val resolvedPlace: com.example.data.location.ResolvedPlace? = null,
 
   // --- Location (REAL GPS preferred; India-centre view until a fix arrives) ---
   val userLocation: GeoPoint = GeoPoint(
@@ -235,6 +255,47 @@ data class VippattiUiState(
   val recommendedAction: RecommendedAction? = null,
   val relocationPlan: RelocationPlan? = null,
 
+  // --- Carrying capacity (SIH milestone) ---
+  /** How many people need relocation here; null = no population figure. */
+  val capacityDemand: com.example.data.capacity.RelocationDemand? = null,
+  /** Capacity verdict per evaluated site id (all candidates, not only ranked). */
+  val capacityAssessments: Map<String, com.example.data.capacity.CapacityAssessment> = emptyMap(),
+
+  // --- Population (SIH 26191) ---
+  /** Population records from the connected source; empty = no source. */
+  val populationRecords: List<com.example.data.population.PopulationRecord> = emptyList(),
+  /** How the relocation demand was resolved, with the reasons for the choice. */
+  val populationResolution: com.example.data.population.PopulationDemandResolution? = null,
+  /**
+   * The three population figures kept in one place: baseline, affected and
+   * relocation demand. Null when nothing was aggregated yet.
+   */
+  val populationAssessment: com.example.data.population.PopulationAssessment? = null,
+  /**
+   * Honest error from the population source, when the fetch itself failed.
+   * Null means the last fetch succeeded (or no source is configured).
+   */
+  val populationSourceError: String? = null,
+
+
+  // --- HISTORICAL DISASTER INTELLIGENCE (EM-DAT archive) ---
+  /**
+   * The loaded historical catalog, or null when nothing is attached/readable.
+   * This data is NEVER live: see [historicalStatus].
+   */
+  val historicalCatalog: com.example.data.historical.HistoricalDisasterCatalog? = null,
+  /** HISTORICAL on success, NOT_CONFIGURED / UNAVAILABLE / ERROR otherwise. */
+  val historicalStatus: DataStatus = DataStatus.LOADING,
+  val historicalError: String? = null,
+  /** Area-level historical evidence for the resolved place (context only). */
+  val historicalContext: com.example.data.historical.HistoricalContext? = null,
+  val historicalFilters: com.example.data.historical.HistoricalFilters =
+    com.example.data.historical.HistoricalFilters(),
+  /** Archived records are hidden from the map unless the user enables them. */
+  val isHistoricalLayerOn: Boolean = false,
+  /** Record open in the historical detail sheet. */
+  val historicalDetailEvent: com.example.data.historical.HistoricalDisasterEvent? = null,
+
   // --- REAL tile-cache size (computed from disk, never fabricated) ---
   val tileCacheBytes: Long? = null,
 
@@ -259,6 +320,94 @@ data class VippattiUiState(
 ) {
 
   // --- Derived broadcast labels (REAL battery/GPS/relays - no hardcoded 84%) ---
+
+  /**
+   * True only for a weather reading fetched live in this session. A stale or
+   * unavailable reading never reads as live.
+   */
+  val isWeatherLive: Boolean get() = weatherStatus == DataStatus.SUCCESS
+
+  // --- Historical (EM-DAT) derived views: filtering and summarising only ---
+
+  /** Records matching the active filters, newest first. */
+  val historicalFilteredEvents: List<com.example.data.historical.HistoricalDisasterEvent>
+    get() = historicalCatalog
+      ?.apply(historicalFilters)
+      ?.sortedByDescending { it.startDate.sortKey }
+      .orEmpty()
+
+  val historicalImpactSummary: com.example.data.historical.HistoricalImpactSummary
+    get() = historicalCatalog?.impactSummary(historicalFilteredEvents)
+      ?: com.example.data.historical.HistoricalImpactSummary.EMPTY
+
+  val historicalYearlyTrend: List<com.example.data.historical.HistoricalTrendPoint>
+    get() = historicalCatalog?.yearlyTrend(historicalFilteredEvents).orEmpty()
+
+  val historicalDecadeTrend: List<com.example.data.historical.HistoricalTrendPoint>
+    get() = historicalCatalog?.decadeTrend(historicalFilteredEvents).orEmpty()
+
+  val historicalTypeFacets: List<Pair<String, Int>>
+    get() = historicalCatalog?.typeFacets(historicalFilteredEvents).orEmpty()
+
+  /**
+   * The ONLY records the map may draw: the layer is on AND the record carries
+   * its own source coordinates. Everything else stays area-level context.
+   */
+  val historicalMappableEvents: List<com.example.data.historical.HistoricalDisasterEvent>
+    get() = if (!isHistoricalLayerOn) {
+      emptyList()
+    } else {
+      historicalFilteredEvents.filter { it.isMappable }
+    }
+
+  /** Honest one-line status for the historical panel header. */
+  val historicalStatusLine: String
+    get() = when (historicalStatus) {
+      DataStatus.HISTORICAL -> listOfNotNull(
+        "HISTORICAL DATA",
+        historicalCatalog?.info?.version?.let { "EM-DAT $it" },
+        historicalCatalog?.let { "${it.totalCount} records" },
+        historicalCatalog?.yearRange?.let { "${it.first}–${it.last}" }
+      ).joinToString(" • ")
+      DataStatus.LOADING -> "Loading historical dataset"
+      DataStatus.NOT_CONFIGURED -> historicalError
+        ?: "No historical disaster dataset is configured"
+      DataStatus.ERROR -> historicalError ?: "Historical dataset could not be read"
+      DataStatus.UNAVAILABLE -> historicalError ?: "Historical dataset unavailable"
+      else -> historicalError ?: historicalStatus.label
+    }
+
+  /** Carrying-capacity verdict for the shelter open in the detail sheet. */
+  val selectedCapacityAssessment: com.example.data.capacity.CapacityAssessment?
+    get() = selectedSafeZone?.let { capacityAssessments[it.id] }
+
+  /** Carrying-capacity verdict for the assigned relocation destination. */
+  val assignedCapacityAssessment: com.example.data.capacity.CapacityAssessment?
+    get() = relocationPlan?.capacityAssessment
+
+  // --- Population lines, kept strictly separate and honestly labelled ---
+
+  /** Baseline census/registrar figure, if a source provided one. */
+  val baselinePopulationLabel: String
+    get() = populationAssessment?.baseline?.let { record ->
+      "${record.value} (${record.classification.label.lowercase()}, ${record.scopeLabel})" +
+        " — not confirmed relocation demand"
+    } ?: "Not provided — no census source connected"
+
+  /** Currently affected population, if a source provided one. */
+  val affectedPopulationLabel: String
+    get() = populationAssessment?.affected?.let { record ->
+      "${record.value} (${record.classification.label.lowercase()}, ${record.scopeLabel})" +
+        " — not confirmed relocation demand"
+    } ?: "Not provided — no affected-population source connected"
+
+  /** The figure used for capacity assessment, with its honest label. */
+  val relocationDemandLabel: String
+    get() = populationResolution?.let { resolution ->
+      val demand = resolution.demand
+      demand.people?.let { "$it — ${demand.roleLabel} (${demand.scopeLabel})" }
+        ?: "Not available — ${resolution.statusLabel}"
+    } ?: "Not available"
 
   /** Explicit torch state exposed to the UI. Never a "maybe on" boolean. */
   val isFlashlightOn: Boolean get() = torchState == TorchState.ON
@@ -309,18 +458,32 @@ data class VippattiUiState(
    * Honest aggregate disaster-data status for the map UI. Derived ONLY from
    * real provider states — a cached source is never labeled LIVE.
    */
+  val providerStatuses: List<Pair<ProviderState, DataStatus>>
+    get() = providerStates.map { state -> state to state.dataStatus() }
+
   val disasterDataStatusLabel: String
     get() {
       if (providerStates.isEmpty()) return "NOT SYNCED"
-      val live = providerStates.count { it.isLive && it.eventCount >= 0 && it.statusMessage == null }
-      val cached = providerStates.count { it.isFromCache }
-      val degraded = providerStates.count { it.statusMessage != null }
+      val statuses = providerStatuses
+      val live = statuses.count { (state, status) ->
+        status == DataStatus.SUCCESS && !state.isFromCache
+      }
+      val cached = statuses.count { (state, status) ->
+        state.isFromCache && status != DataStatus.ERROR
+      }
+      // Three separate facts: a source that FAILED is not the same as one that
+      // was never CONFIGURED in this build, and neither is "unavailable" cache.
+      val failed = statuses.count { (_, status) -> status == DataStatus.ERROR }
+      val unavailable = statuses.count { (_, status) -> status == DataStatus.UNAVAILABLE }
+      val unconfigured = statuses.count { (_, status) -> status == DataStatus.NOT_CONFIGURED }
       val last = disasterLastSyncMillis
       val stale = last != null && !com.example.data.disaster.DisasterCachePolicy.isRecent(last, System.currentTimeMillis())
       val parts = mutableListOf<String>()
       if (live > 0) parts += "LIVE"
       if (cached > 0) parts += "CACHED"
-      if (degraded > 0) parts += "$degraded UNAVAILABLE"
+      if (failed > 0) parts += "$failed FAILED"
+      if (unavailable > 0) parts += "$unavailable UNAVAILABLE"
+      if (unconfigured > 0) parts += "$unconfigured NOT CONFIGURED"
       if (parts.isEmpty()) parts += if (stale) "STALE" else "NO DATA"
       return parts.joinToString(" • ")
     }
@@ -339,11 +502,40 @@ data class VippattiUiState(
    * Honest news-connection state for the Dispatches banner — derived from the
    * real sync label the news pipeline produced, never hardcoded "OFFLINE".
    */
-  val newsConnectionStateLabel: String
+  val newsStatus: DataStatus
     get() = when {
-      isSyncing -> "SYNCING…"
-      lastSyncTime.startsWith("ONLINE") -> "ONLINE • LIVE GNEWS FEED"
-      lastSyncTime.startsWith("CACHED") -> "OFFLINE • CACHED FEED"
+      isSyncing -> DataStatus.LOADING
+      newsArticles.isNotEmpty() && isNewsFromCache -> DataStatus.STALE
+      newsArticles.isNotEmpty() -> DataStatus.SUCCESS
+      newsError != null -> DataStatus.ERROR
+      else -> DataStatus.EMPTY
+    }
+
+  /**
+   * Honest description of how the news feed was scoped: the resolved place
+   * names when they exist, otherwise an explicit national-only statement. It
+   * never names a district or state the app did not resolve.
+   */
+  val newsScopeNote: String
+    get() {
+      val rings = listOfNotNull(
+        resolvedPlace?.district?.takeIf { it.isNotBlank() },
+        resolvedPlace?.state?.takeIf { it.isNotBlank() }
+      )
+      return if (rings.isEmpty()) {
+        "News scope: India-wide - district/state not resolved from location"
+      } else {
+        "News scope: ${rings.joinToString(", ")} + India" +
+          (resolvedPlace?.source?.let { " ($it)" } ?: "")
+      }
+    }
+
+  val newsConnectionStateLabel: String
+    get() = when (newsStatus) {
+      DataStatus.LOADING -> "SYNCING…"
+      DataStatus.SUCCESS -> "ONLINE • LIVE GNEWS FEED"
+      DataStatus.STALE -> "OFFLINE • CACHED FEED"
+      DataStatus.ERROR -> "ERROR • NEWS FEED UNREACHABLE"
       else -> "NOT SYNCED"
     }
 }
