@@ -1,22 +1,174 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Vippatti Sarana
 
-# Run and deploy your AI Studio app
+> **Disaster Intelligence & Emergency Response Platform for Vulnerable Communities**
 
-This contains everything you need to run your app locally.
+Vippatti Sarana is an Android-based disaster management application designed to help users assess disaster risks, identify safer areas, access evacuation routes, and receive relevant disaster information.
 
-View your app in AI Studio: https://ai.studio/apps/2fdd34c1-5c2a-451e-ad59-8cba9056dcc2
+The project is currently focused on **Idukki, Kerala**, with support for **India-wide disaster data sources**.
 
-## Run Locally
+---
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+## 🚨 Features
 
+- 🗺️ **Disaster Radar** — View hazards, disaster events, safe zones, and evacuation routes.
+- 📍 **Risk Assessment** — Assess disaster risk based on the user's location.
+- 🏠 **Safe Zone Detection** — Identify and rank nearby safer locations.
+- 🛣️ **Evacuation Routing** — Plan evacuation routes with alternative routes.
+- 🌋 **Disaster Intelligence** — Uses data from USGS, NASA FIRMS, IMD CAP, and user reports.
+- 📰 **Disaster News** — Fetch relevant disaster-related news through GNews.
+- 📢 **Emergency Tools** — SOS, emergency contacts, flashlight, siren, and battery information.
+- 🔊 **Audio Bulletin** — Provides spoken updates about risk, recommended actions, and relevant news.
+- 📝 **Incident Reporting** — Report incidents and provide situation information.
+- 📦 **Offline Support** — Caches selected data for use during limited connectivity.
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
-7. If you have already published your app in AI Studio, please [request upload key reset](https://support.google.com/googleplay/android-developer/answer/9842756#zippy=%2Crequest-an-upload-key-reset) in Google Play Console.
+---
+
+## 🛠️ Tech Stack
+
+| Category         | Technology                           |
+| ---------------- | ------------------------------------ |
+| Platform         | Android                              |
+| Language         | Kotlin                               |
+| UI               | Jetpack Compose                      |
+| Architecture     | MVVM                                 |
+| Maps             | OSMDroid + OpenStreetMap             |
+| Routing          | OSRM                                 |
+| Networking       | OkHttp / Retrofit                    |
+| Local Storage    | Room / File Cache                    |
+| Backend Services | Firebase                             |
+| News             | GNews API                            |
+| Disaster Data    | USGS, NASA FIRMS, IMD CAP            |
+| Testing          | JUnit, Robolectric, Compose UI Tests |
+
+---
+
+## 🏗️ Architecture
+
+```text
+                    Vippatti Sarana
+                          │
+                          ▼
+                   Jetpack Compose
+                          │
+                          ▼
+                  VippattiViewModel
+                          │
+          ┌───────────────┼───────────────┐
+          ▼               ▼               ▼
+    Risk Assessment   Safe Zones      Routing
+          │               │               │
+          └───────────────┼───────────────┘
+                          ▼
+                 Emergency Response
+```
+
+For the detailed architecture and data flow, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+
+---
+
+## 📂 Project Structure
+
+```text
+app/
+├── src/main/java/
+│   └── com/example/
+│       ├── data/
+│       │   ├── risk/
+│       │   ├── shelters/
+│       │   ├── routing/
+│       │   ├── reports/
+│       │   ├── news/
+│       │   └── disaster/
+│       │
+│       └── ui/
+│           └── components/
+│
+├── build.gradle.kts
+└── .env.example
+
+ARCHITECTURE.md
+README.md
+```
+
+---
+
+## 📥 Download & Install the App
+
+To install **Vippatti Sarana** on your Android device:
+
+1. Go to the **[Releases](../../releases)** section of this repository.
+2. Open the **latest release**.
+3. Inside the release, you will find a **Google Drive link**.
+4. Open the Drive link and download the **APK** file.
+5. On your Android device, enable **"Install from unknown sources"** (if prompted) for your browser or file manager.
+6. Open the downloaded APK and install the app.
+
+> **Note:** Always download the APK from the **latest release** to ensure you have the most up-to-date version of the app.
+
+---
+
+## ⚙️ Setup (For Developers)
+
+### Requirements
+
+- Android Studio
+- JDK 11+
+- Android SDK 36
+- Android device or emulator
+
+### Environment Variables
+
+Create an `app/.env` file and add the required API keys:
+
+```env
+GNEWS_API_KEY=YOUR_GNEWS_API_KEY
+FIRMS_MAP_KEY=YOUR_FIRMS_MAP_KEY
+```
+
+> **Note:** Do not commit `.env` or API keys to the repository.
+
+### Build
+
+```bash
+./gradlew.bat compileDebugKotlin
+```
+
+### Run Tests
+
+```bash
+./gradlew.bat testDebugUnitTest
+```
+
+### Build APK
+
+```bash
+./gradlew.bat assembleDebug
+```
+
+---
+
+## 🔐 Data Transparency
+
+Vippatti Sarana is designed to distinguish between real data and fallback/demo data.
+
+- Device GPS data is clearly identified when available.
+- Fallback location data is explicitly labelled.
+- Disaster events retain their respective data sources.
+- News is clearly marked as **not an official emergency alert**.
+- The application avoids fabricating alerts, routes, or verification statuses.
+
+---
+
+## 🚧 Project Status
+
+Vippatti Sarana is an active disaster-management pilot project focused on **risk awareness**, **safe-zone identification**, **evacuation planning**, and **emergency assistance**.
+
+---
+
+## ⚠️ Disclaimer
+
+Vippatti Sarana is a software prototype/pilot and **should not be considered a replacement for official emergency warnings, government advisories, or instructions from emergency authorities**.
+
+---
+
+**Vippatti Sarana — Technology for Safer Communities.**

@@ -1,16 +1,16 @@
-﻿package com.example.viewmodel
+package com.example.viewmodel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.EmergencyContact
-import com.example.data.GoBagItem
-import com.example.data.MockDisasterRepository
-import com.example.data.PilotRegionData
-import com.example.data.UserProfile
-import com.example.data.WeatherMetrics
+import com.example.data.disaster.EmergencyContact
+import com.example.data.disaster.GoBagItem
+import com.example.data.disaster.MockDisasterRepository
+import com.example.data.disaster.PilotRegionData
+import com.example.data.model.UserProfile
+import com.example.data.disaster.WeatherMetrics
 import com.example.data.reports.EmergencyReport
 import com.example.data.reports.EmergencyReportService
-import com.example.data.reports.NdrfEmergencyReportService
+import com.example.data.reports.LocalEmergencyReportService
 import com.example.data.reports.ReportKind
 import com.example.data.reports.ReportReceipt
 import com.example.BuildConfig
@@ -22,11 +22,13 @@ import com.example.data.news.NewsError
 import com.example.data.news.NewsFeed
 import com.example.data.news.NewsRepository
 import com.example.data.news.NewsTtsBulletin
+import com.example.data.weather.OpenMeteoWeatherService
 import com.example.data.model.GeoMath
 import com.example.data.model.HazardSeverity
 import com.example.data.model.HazardZone
 import com.example.data.model.SafeZone
 import com.example.data.routing.GeoPoint
+import com.example.data.routing.LiveRouteCache
 import com.example.data.routing.OsrmRoutingService
 import com.example.data.routing.RouteResult
 import com.example.data.risk.ActionAdvisor
@@ -42,14 +44,14 @@ import com.example.data.disaster.DisasterDataRepository
 import com.example.data.disaster.DisasterEvent
 import com.example.data.disaster.DisasterLayer
 import com.example.data.disaster.DisasterSource
-import com.example.data.disaster.FirmsFireProvider
-import com.example.data.disaster.ImdCapProvider
+import com.example.data.disaster.providers.FirmsFireProvider
+import com.example.data.disaster.providers.ImdCapProvider
 import com.example.data.disaster.IncidentCategory
 import com.example.data.disaster.IncidentReport
 import com.example.data.disaster.IndiaGeo
 import com.example.data.disaster.MemoryDisasterCache
 import com.example.data.disaster.ProviderState
-import com.example.data.disaster.UsgsEarthquakeProvider
+import com.example.data.disaster.providers.UsgsEarthquakeProvider
 import com.example.data.disaster.defaultSeverity
 import com.example.data.disaster.dedupeBySourceEventId
 import com.example.data.disaster.toHazardZones
@@ -76,192 +78,24 @@ private const val REROUTE_MIN_MOVEMENT_METERS = 50.0
 /** Cap on locally-held citizen reports (device memory guard). */
 private const val MAX_INCIDENT_REPORTS = 50
 
-enum class ScreenTab {
-  RADAR_MAP,
-  NEWS_DISPATCHES,
-  INSTRUCTIONS,
-  PROFILE
-}
+/** Siren auto-stop window, surfaced to the user as a visible countdown. */
+const val SIREN_MAX_SECONDS = 60
+
+/** Reason string returned when the CAMERA permission is required for the torch. */
+const val TORCH_REASON_PERMISSION = "Camera permission is required to switch the light on."
 
 /**
- * Central UI state. All intelligence results flow into this single state,
- * preserving the single primary flow:
- *   Compose UI -> ViewModel -> Repository/Services -> Location ->
- *   Hazard/Safe-Zone Intelligence -> OSRM Routing -> OSMDroid Map
+ * Weather refresh guard. A 1 Hz GPS stream used to trigger one Open-Meteo HTTP
+ * request per fix; the reading is now reused for [WEATHER_MIN_REFRESH_MS] and
+ * only re-fetched after meaningful movement or a manual sync.
  */
-data class VippattiUiState(
-  // --- App chrome ---
-  val currentTab: ScreenTab = ScreenTab.RADAR_MAP,
-  val isDarkTheme: Boolean = true,
-  val is100PercentOfflineCached: Boolean = true,
-  val lastSyncTime: String = "Not synced yet — tap Sync to fetch live GNews disaster news",
-  val isSyncing: Boolean = false,
-  val isAudioPlaying: Boolean = false,
-  val audioPlaybackSeconds: Int = 0,
-  val selectedNewsCategory: String = "All",
-  // --- REAL GNews disaster-news pipeline (articles are never fabricated) ---
-  val newsArticles: List<NewsArticle> = emptyList(),
-  val newsHero: NewsArticle? = null,
-  val isNewsFromCache: Boolean = false,
-  val newsLastFetchedAtMillis: Long? = null,
-  val newsEverLoaded: Boolean = false,
-  val newsError: NewsError? = null,
-  /** Spoken-bulletin text — composed from real state, consumed by real TTS. */
-  val audioBulletinText: String = "",
-  val goBagItems: List<GoBagItem> = MockDisasterRepository.defaultGoBagItems,
-  val userIsSafe: Boolean = true,
-  val isSosActive: Boolean = false,
-  val showSosBroadcastDialog: Boolean = false,
-  val showInteractiveBagDialog: Boolean = false,
-  val showAddContactDialog: Boolean = false,
-  val isFlashlightOn: Boolean = false,
-  val isSirenOn: Boolean = false,
-  val contactsList: List<EmergencyContact> = MockDisasterRepository.emergencyContacts,
+private const val WEATHER_MIN_REFRESH_MS = 10L * 60L * 1000L
+private const val WEATHER_MIN_MOVEMENT_METERS = 2_000.0
 
-  // --- Editable citizen profile + REAL device battery (replaces hardcoded 84%) ---
-  val userProfile: UserProfile = UserProfile(),
-  val showEditProfileDialog: Boolean = false,
-  val batteryPercent: Int? = null,
-  val isBatteryCharging: Boolean = false,
-  val showSosConfirmDialog: Boolean = false,
-  val showSituationReportDialog: Boolean = false,
-  val isSubmittingReport: Boolean = false,
-  val lastReportReceipt: ReportReceipt? = null,
-  val weather: WeatherMetrics = WeatherMetrics(),
-  val snackbarMessage: String? = null,
-
-  // --- Location (REAL GPS preferred; India-centre view until a fix arrives) ---
-  val userLocation: GeoPoint = GeoPoint(
-    com.example.data.disaster.IndiaGeo.CENTER_LAT,
-    com.example.data.disaster.IndiaGeo.CENTER_LON
-  ),
-  /**
-   * true -> NO GPS fix yet; the user location is just the India map centre
-   * (NEVER a district-level fallback). false -> real device GPS fix.
-   */
-  val isUserLocationFallback: Boolean = true,
-
-  // --- REAL India-wide disaster pipeline (USGS + FIRMS + IMD CAP) ---
-  /** Live, provider-sourced events (normalized, validated, deduped). */
-  val disasterEvents: List<DisasterEvent> = emptyList(),
-  /** Per-source freshness/status (Live / Recent / Cached / Unavailable). */
-  val providerStates: List<ProviderState> = emptyList(),
-  /** True while a disaster-data sync is in flight. */
-  val isDisasterSyncing: Boolean = false,
-  /** Aggregated label: LIVE when any provider is live, else cached/unavailable. */
-  val isDisasterDataLive: Boolean = false,
-  /** Latest sync time across providers (for "Last updated" display). */
-  val disasterLastSyncMillis: Long? = null,
-  /** Map layer toggles (user-controlled; zoom rules applied at render time). */
-  val enabledLayers: Set<DisasterLayer> = setOf(
-    DisasterLayer.OFFICIAL_ALERTS, DisasterLayer.EARTHQUAKES,
-    DisasterLayer.USER_REPORTS, DisasterLayer.SAFE_ZONES,
-    DisasterLayer.EVACUATION_ROUTE, DisasterLayer.MY_LOCATION
-  ),
-  /** Explicit DEMO MODE — clearly-labeled pilot/simulated data. Off by default. */
-  val isDemoMode: Boolean = false,
-  /** Citizen-submitted incident reports (unverified, TTL'd). */
-  val userIncidentReports: List<IncidentReport> = emptyList(),
-  /** Selected disaster event for the tap detail panel. */
-  val disasterEventDetail: DisasterEvent? = null,
-  /** Dialog for the "Add a Report" incident flow. */
-  val showIncidentReportDialog: Boolean = false,
-
-  // --- Intelligence results (recomputed on every location change) ---
-  val hazardZones: List<HazardZone> = emptyList(),
-  val safeZones: List<SafeZone> = PilotRegionData.safeZones,
-  /** EVERY shelter evaluated (feasible AND rejected) — UI must show rejection reasons. */
-  val evaluatedShelters: List<SafeZoneEvaluation> = emptyList(),
-  /** Feasible-only, best-first — feeds routing/assignment (unchanged contract). */
-  val rankedShelters: List<SafeZoneEvaluation> = emptyList(),
-  val personalRisk: PersonalRiskAssessment? = null,
-  val recommendedAction: RecommendedAction? = null,
-  val relocationPlan: RelocationPlan? = null,
-
-  // --- REAL tile-cache size (computed from disk, never fabricated) ---
-  val tileCacheBytes: Long? = null,
-
-  // --- Routing ---
-  val selectedSafeZone: SafeZone? = null,
-  val selectedEvaluation: SafeZoneEvaluation? = null,
-  val activeRoute: RouteResult? = null,
-  val alternativeRoutes: List<RouteResult> = emptyList(),
-  val isCalculatingRoute: Boolean = false,
-  val travelMode: String = "foot", // "foot" or "driving"
-  val isNavigatingLive: Boolean = false,
-  val currentNavigationStepIndex: Int = 0,
-
-  // --- Detail sheets ---
-  val hazardDetailZone: HazardZone? = null,
-  val safeZoneDetail: SafeZone? = null
-) {
-
-  // --- Derived broadcast labels (REAL battery/GPS/relays - no hardcoded 84%) ---
-  /** Live device battery reading for SOS/report payloads - replaces the demo 84%. */
-  val batteryLabel: String
-    get() = batteryPercent?.let { percent ->
-      "$percent%" + if (isBatteryCharging) " (Charging)" else " (Discharging)"
-    } ?: "Reading device battery..."
-
-  /** Real coordinates (GPS fix or India-centre view) shown in the SOS dialogs. */
-  val sosLocationLabel: String
-    get() = String.format(
-      "%.4f N, %.4f E (%s)",
-      userLocation.lat,
-      userLocation.lon,
-      if (isUserLocationFallback) "NO GPS FIX" else "LIVE GPS"
-    )
-
-  /** Relay targets for a distress broadcast: NDRF 112 + kin contact count. */
-  val priorityRelaysLabel: String
-    get() = "NDRF 112 & " + contactsList.size + " Kin Contacts"
-
-  /**
-   * Honest aggregate disaster-data status for the map UI. Derived ONLY from
-   * real provider states — a cached source is never labeled LIVE.
-   */
-  val disasterDataStatusLabel: String
-    get() {
-      if (providerStates.isEmpty()) return "NOT SYNCED"
-      val live = providerStates.count { it.isLive && it.eventCount >= 0 && it.statusMessage == null }
-      val cached = providerStates.count { it.isFromCache }
-      val degraded = providerStates.count { it.statusMessage != null }
-      val last = disasterLastSyncMillis
-      val stale = last != null && !com.example.data.disaster.DisasterCachePolicy.isRecent(last, System.currentTimeMillis())
-      val parts = mutableListOf<String>()
-      if (live > 0) parts += "LIVE"
-      if (cached > 0) parts += "CACHED"
-      if (degraded > 0) parts += "$degraded UNAVAILABLE"
-      if (parts.isEmpty()) parts += if (stale) "STALE" else "NO DATA"
-      return parts.joinToString(" • ")
-    }
-
-  /** Human-readable tile-cache size (e.g. "48.3 MB") or null until measured. */
-  val tileCacheSizeLabel: String?
-    get() = tileCacheBytes?.let { bytes ->
-      when {
-        bytes >= 1_000_000L -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1_000_000.0)
-        bytes >= 1_000L -> String.format(java.util.Locale.US, "%.0f KB", bytes / 1_000.0)
-        else -> "$bytes B"
-      }
-    }
-
-  /**
-   * Honest news-connection state for the Dispatches banner — derived from the
-   * real sync label the news pipeline produced, never hardcoded "OFFLINE".
-   */
-  val newsConnectionStateLabel: String
-    get() = when {
-      isSyncing -> "SYNCING…"
-      lastSyncTime.startsWith("ONLINE") -> "ONLINE • LIVE GNEWS FEED"
-      lastSyncTime.startsWith("CACHED") -> "OFFLINE • CACHED FEED"
-      else -> "NOT SYNCED"
-    }
-}
 
 class VippattiViewModel(
-  /** Emergency report gateway — NDRF pilot simulation by default, swappable. */
-  private val reportService: EmergencyReportService = NdrfEmergencyReportService(),
+  /** Local emergency-report recorder (no backend relay exists in this build). */
+  private val reportService: EmergencyReportService = LocalEmergencyReportService(),
   /**
    * Real GNews disaster-news cache — file-backed in production (MainActivity
    * injects NewsFileCache so cached articles survive process restarts),
@@ -292,15 +126,24 @@ class VippattiViewModel(
       FirmsFireProvider(mapKeyProvider = { BuildConfig.FIRMS_MAP_KEY })
     ),
     cache = disasterCache
-  )
+  ),
+  /** News pipeline override — tests inject a failing/fake service (no real network). */
+  private val newsRepositoryOverride: NewsRepository? = null,
+  /**
+   * Weather fetcher — production reads live Open-Meteo; tests inject a fake so
+   * unit tests never perform real HTTP.
+   */
+  private val weatherFetcher: suspend (GeoPoint) -> WeatherMetrics? =
+    OpenMeteoWeatherService::fetchNow
 ) : ViewModel() {
 
   /** Real GNews disaster-news pipeline (live API + offline cache). */
-  private val newsRepository: NewsRepository = NewsRepository(
-    service = GNewsServiceImpl(),
-    cache = newsCache,
-    apiKeyProvider = { BuildConfig.GNEWS_API_KEY }
-  )
+  private val newsRepository: NewsRepository = newsRepositoryOverride
+    ?: NewsRepository(
+      service = GNewsServiceImpl(),
+      cache = newsCache,
+      apiKeyProvider = { BuildConfig.GNEWS_API_KEY }
+    )
 
   private val _uiState = MutableStateFlow(VippattiUiState())
   val uiState: StateFlow<VippattiUiState> = _uiState.asStateFlow()
@@ -310,9 +153,17 @@ class VippattiViewModel(
   private var routingJob: Job? = null
   private var newsJob: Job? = null
   private var disasterJob: Job? = null
+  private var weatherJob: Job? = null
 
   /** Location the current/last route was computed from — guards GPS re-routing. */
   private var lastRouteOrigin: GeoPoint? = null
+
+  /** Weather reading guard: TTL + movement anchor (see [refreshWeather]). */
+  private var weatherFetchedAtMillis = 0L
+  private var weatherAnchor: GeoPoint? = null
+
+  /** Live road routes by destination/mode/origin-grid/hazards — instant exact roads on repeat views. */
+  private val liveRouteCache = LiveRouteCache()
 
   init {
     // Cold start: run the intelligence pipeline once on the India-centre view
@@ -330,6 +181,37 @@ class VippattiViewModel(
     // Cold start of the REAL GNews pipeline: a fresh cache (< 30 min) serves
     // instantly (offline survival + quota protection); otherwise it fetches.
     newsJob = viewModelScope.launch { applyNewsFeed(newsRepository.ensureLoaded()) }
+    // Cold start of LIVE weather (Open-Meteo, keyless) for the radar bar.
+    refreshWeather()
+  }
+
+  /**
+   * Pulls LIVE temperature / rainfall / wind + 3-hour trend for the current
+   * map location. Offline or API failure keeps the previous reading (or the
+   * honest empty state on first run) — weather is never invented.
+   */
+  fun refreshWeather(force: Boolean = false) {
+    // PERFORMANCE FIX: this used to fire one HTTP request per GPS fix (1 Hz).
+    // A reading is now reused until the TTL expires or the user has moved
+    // meaningfully; a manual Sync still forces a fresh reading.
+    val anchor = _uiState.value.userLocation
+    val stillFresh = System.currentTimeMillis() - weatherFetchedAtMillis < WEATHER_MIN_REFRESH_MS
+    val movedFarEnough = weatherAnchor?.let { previous ->
+      GeoMath.distanceMeters(previous, anchor) >= WEATHER_MIN_MOVEMENT_METERS
+    } ?: true
+    if (!force && stillFresh && !movedFarEnough) return
+
+    weatherJob?.cancel()
+    weatherJob = viewModelScope.launch {
+      val live = weatherFetcher(anchor)
+      if (live != null) {
+        weatherFetchedAtMillis = System.currentTimeMillis()
+        weatherAnchor = anchor
+        _uiState.update { it.copy(weather = live, isWeatherLive = true) }
+      } else if (_uiState.value.weather == WeatherMetrics()) {
+        _uiState.update { it.copy(isWeatherLive = false) }
+      }
+    }
   }
 
   // ============================================================ INTELLIGENCE
@@ -337,7 +219,7 @@ class VippattiViewModel(
   /**
    * The heart of the decision pipeline:
    * GPS/India-centre location -> hazard analysis (REAL live events + user
-   * reports + explicitly-labeled demo data) -> safe-zone discovery ->
+   * reports + explicitly-labeled mock data) -> safe-zone discovery ->
    * capacity check -> ranked options -> personal risk -> recommended action ->
    * relocation plan -> evacuation route.
    */
@@ -346,41 +228,47 @@ class VippattiViewModel(
     val location = state.userLocation
     val now = System.currentTimeMillis()
 
-    // Hazard picture assembly — LIVE data first, never silently mixed:
-    //   1. REAL provider events (normalized to HazardZone for every engine).
-    //   2. Unverified user incident reports (TTL-expired ones drop out).
-    //   3. DEMO MODE pilot zones — ONLY when the user explicitly enabled it.
-    val liveZones = toHazardZones(
-      state.disasterEvents.filter { it.isValid(now) }
-    )
+    // Hazard picture assembly.
+    // LIVE provider events and citizen reports are ALWAYS included: the
+    // "simulated demo" switch must never hide real hazards. Previously it emptied
+    // the whole picture, which silently produced a GREEN risk verdict and empty
+    // routing anywhere in India whenever demo data was switched off.
+    val liveZones = toHazardZones(state.disasterEvents.filter { it.isValid(now) })
     val reportZones = toHazardZones(
       state.userIncidentReports
         .map { it.toDisasterEvent(now) }
         .filter { it.isValid(now) }
     )
-    val demoZones = if (state.isDemoMode) PilotRegionData.hazardZones else emptyList()
-    val hazards = (liveZones + reportZones + demoZones).distinctBy { it.id }
-
-    val zones = state.safeZones
-    // Safe zones exist ONLY in the pilot coverage area; outside it, ranking
-    // simply yields no feasible shelter (honest empty state), never a fake
-    // nationwide shelter list.
-    val zonesInScope = if (state.isDemoMode || IndiaGeo.isWithinPilotCoverage(location)) {
-      zones
+    val mockZones = if (state.isMockDataVisible) {
+      // India-only guard so a record outside IndiaGeo never reaches the map.
+      PilotRegionData.hazardZones.filter { IndiaGeo.contains(it.center) }
     } else {
-      zones.filter { IndiaGeo.isWithinPilotCoverage(it.point) }
+      emptyList()
+    }
+    val hazards = (liveZones + reportZones + mockZones).distinctBy { it.id }
+
+    // The shelter network is entirely SIMULATED today (there is no shelter
+    // registry backend), so it is offered only while the demo switch is on.
+    // There is no live shelter source to fall back to, and inventing one would
+    // be fabrication.
+    val zonesInScope = if (state.isMockDataVisible) {
+      state.safeZones.filter { IndiaGeo.contains(it.point) }
+    } else {
+      emptyList()
     }
 
     val risk = RiskAssessmentEngine.assess(
       location = location,
       hazards = hazards,
       provenanceNote = when {
-        state.isDemoMode ->
-          "Location: ${if (state.isUserLocationFallback) "India centre (no GPS)" else "device GPS"} • Demo mode: labeled pilot hazards shown"
+        state.isMockDataVisible ->
+          "Location: ${if (state.isUserLocationFallback) "India centre (no GPS)" else "device GPS"} • " +
+            "Hazards: live provider feeds + citizen reports + labelled SIMULATED demo zones • " +
+            "Shelters: SIMULATED demo records (no shelter registry connected)"
         state.isUserLocationFallback ->
-          "Location: India centre (no GPS yet) • Hazards: live provider feeds"
+          "Location: India centre (no GPS yet) • Hazards: live provider feeds + citizen reports only"
         else ->
-          "Location: device GPS • Hazards: live provider feeds + user reports"
+          "Location: device GPS • Hazards: live provider feeds + citizen reports only"
       }
     )
 
@@ -403,13 +291,25 @@ class VippattiViewModel(
     )
 
     _uiState.update {
+      val selectedStillVisible = it.selectedSafeZone?.let { sel ->
+        zonesInScope.any { z -> z.id == sel.id }
+      } ?: true
+      // Hiding demo data invalidates any simulated destination + its corridor —
+      // the map must never keep routing to a zone that just disappeared.
       it.copy(
         personalRisk = risk,
         hazardZones = hazards,
         evaluatedShelters = evaluated,
         rankedShelters = ranked,
         recommendedAction = action,
-        relocationPlan = plan
+        relocationPlan = plan,
+        selectedSafeZone = if (selectedStillVisible) it.selectedSafeZone else null,
+        selectedEvaluation = if (selectedStillVisible) it.selectedEvaluation else null,
+        activeRoute = if (selectedStillVisible) it.activeRoute else null,
+        alternativeRoutes = if (selectedStillVisible) it.alternativeRoutes else emptyList(),
+        routeStatus = if (selectedStillVisible) it.routeStatus else RouteStatus.IDLE,
+        routeStatusMessage = if (selectedStillVisible) it.routeStatusMessage else null,
+        isNavigatingLive = if (selectedStillVisible) it.isNavigatingLive else false
       )
     }
 
@@ -437,6 +337,7 @@ class VippattiViewModel(
       }
       recomputeIntelligence()
       maybeRecalculateRouteForNewLocation()
+      refreshWeather()
     }
   }
 
@@ -483,18 +384,42 @@ class VippattiViewModel(
   }
 
   /**
-   * Explicit DEMO MODE toggle. ON -> the labeled Idukki pilot dataset is
-   * shown for demonstration and every demo hazard stays provenance-labeled.
-   * OFF -> only REAL provider data and user reports remain.
+   * Simulated-demo-data switch. ON -> the labelled SIMULATED India network is
+   * shown; OFF -> the simulated network disappears while LIVE provider events
+   * and citizen reports keep reaching the map and every engine.
+   * Kept in sync with the radar "SIMULATED DEMO" toggle (same dataset).
    */
-  fun setDemoMode(enabled: Boolean) {
+  fun setMockMode(enabled: Boolean) {
     _uiState.update {
       it.copy(
-        isDemoMode = enabled,
+        isMockMode = enabled,
+        isMockDataVisible = enabled,
         snackbarMessage = if (enabled) {
-          "Demo mode ON — labeled pilot data for demonstration. Live provider data continues in parallel."
+          "Simulated demo ON — labelled India zones shown; live data unchanged"
         } else {
-          "Demo mode OFF — showing live provider data and user reports only."
+          "Simulated demo OFF — live data still shown"
+        }
+      )
+    }
+    recomputeIntelligence()
+  }
+
+  /**
+   * Radar "SIMULATED DEMO" toggle: ON adds the labelled mock danger + safe
+   * zones; OFF removes ONLY the simulated network — live provider events,
+   * citizen reports, risk assessment and routing keep working.
+   * Single source of truth for simulated-data visibility.
+   */
+  fun toggleMockData() {
+    val next = !_uiState.value.isMockDataVisible
+    _uiState.update {
+      it.copy(
+        isMockDataVisible = next,
+        isMockMode = next,
+        snackbarMessage = if (next) {
+          "Simulated demo ON — labelled India zones shown; live data unchanged"
+        } else {
+          "Simulated demo OFF — live data still shown"
         }
       )
     }
@@ -598,23 +523,107 @@ class VippattiViewModel(
     if (autoRoute) calculateRouteToSelectedZone()
   }
 
+  /**
+   * Instant corridor first, live road route as an upgrade:
+   *  1. A cached live road route (same shelter/mode/area/hazards) paints the
+   *     EXACT road pathway immediately with no straight-line flash at all.
+   *  2. Otherwise the offline hazard-skirting corridor draws instantly as a
+   *     DASHED preview (never mistaken for surveyed roads).
+   *  3. The live OSRM road pathway swaps in when it arrives — the badge
+   *     flips OFFLINE EST. -> OSRM VALIDATED.
+   * Stale results (newer selection, cleared route, hidden mock) never
+   * overwrite current state: the upgrade applies only to the zone + origin
+   * this call was made for.
+   */
   fun calculateRouteToSelectedZone() {
     val zone = _uiState.value.selectedSafeZone ?: return
     routingJob?.cancel()
-    lastRouteOrigin = _uiState.value.userLocation
-    routingJob = viewModelScope.launch {
-      _uiState.update { it.copy(isCalculatingRoute = true) }
-      val result = OsrmRoutingService.calculateRoute(
-        origin = _uiState.value.userLocation,
-        destination = zone.point,
-        mode = _uiState.value.travelMode,
-        hazards = _uiState.value.hazardZones,
-        destinationName = zone.name
-      )
+    val origin = _uiState.value.userLocation
+    val mode = _uiState.value.travelMode
+    val hazards = _uiState.value.hazardZones
+    lastRouteOrigin = origin
+    val cacheKey = LiveRouteCache.key(zone.id, mode, origin, hazards)
+
+    // A cached LIVE road route for the exact destination/mode/area/hazard set is
+    // real road geometry and can be shown immediately.
+    val cached = liveRouteCache.get(cacheKey)
+    if (cached != null) {
       _uiState.update {
         it.copy(
+          activeRoute = cached,
+          alternativeRoutes = emptyList(),
           isCalculatingRoute = false,
-          activeRoute = result,
+          routeStatus = RouteStatus.READY,
+          routeStatusMessage = "Cached OSRM road route to ${zone.name} — hazard-checked.",
+          currentNavigationStepIndex = 0
+        )
+      }
+      return
+    }
+
+    // NO straight line is drawn while we wait. The map stays clean until a real
+    // road response arrives; the previous behaviour painted a 3-point
+    // origin→midpoint→destination corridor, which reads as a real safe route.
+    _uiState.update {
+      it.copy(
+        activeRoute = null,
+        alternativeRoutes = emptyList(),
+        isCalculatingRoute = true,
+        routeStatus = RouteStatus.REQUESTING,
+        routeStatusMessage = "Requesting a road route to ${zone.name}…",
+        currentNavigationStepIndex = 0
+      )
+    }
+
+    routingJob = viewModelScope.launch {
+      val live = OsrmRoutingService.fetchLiveRoutesAsync(
+        origin = origin,
+        destination = zone.point,
+        mode = mode,
+        hazards = hazards,
+        destinationName = zone.name,
+        wantAlternatives = 1
+      ).firstOrNull()
+
+      // Staleness guard: a newer selection/origin must never be overwritten.
+      if (lastRouteOrigin != origin || _uiState.value.selectedSafeZone?.id != zone.id) return@launch
+
+      if (live == null) {
+        _uiState.update {
+          it.copy(
+            activeRoute = null,
+            isCalculatingRoute = false,
+            routeStatus = RouteStatus.NETWORK_ERROR,
+            routeStatusMessage = "No road route received (offline or router unavailable). " +
+              "Nothing is drawn — an offline estimate is only offered if you ask for it."
+          )
+        }
+        return@launch
+      }
+      if (live.pathPoints.isEmpty()) {
+        _uiState.update {
+          it.copy(
+            activeRoute = null,
+            isCalculatingRoute = false,
+            routeStatus = RouteStatus.NO_ROUTE,
+            routeStatusMessage = "The router returned no usable corridor to ${zone.name}."
+          )
+        }
+        return@launch
+      }
+
+      // Road geometry received -> validate it against the live hazard picture
+      // (hazardWarnings / routeSafetyStatus are produced by that check), then
+      // publish. Only a READY route is ever drawn by the map.
+      _uiState.update { it.copy(routeStatus = RouteStatus.VALIDATING_HAZARDS) }
+      liveRouteCache.put(cacheKey, live)
+      _uiState.update {
+        it.copy(
+          activeRoute = live,
+          isCalculatingRoute = false,
+          routeStatus = RouteStatus.READY,
+          routeStatusMessage = "Live OSRM road route to ${zone.name} — " +
+            "hazard-checked: ${live.routeSafetyStatus.label}",
           currentNavigationStepIndex = 0
         )
       }
@@ -622,28 +631,113 @@ class VippattiViewModel(
   }
 
   /**
+   * Explicit opt-in for the OFFLINE straight-line estimate. This geometry does
+   * not follow roads, so it is published only on a direct user request and is
+   * labelled [RouteStatus.FALLBACK_UNVERIFIED] — never as a safe route.
+   */
+  fun requestOfflineFallbackRoute() {
+    val zone = _uiState.value.selectedSafeZone ?: return
+    val origin = _uiState.value.userLocation
+    val mode = _uiState.value.travelMode
+    val hazards = _uiState.value.hazardZones
+    lastRouteOrigin = origin
+    val fallback = OsrmRoutingService.calculateOfflineTacticalRoute(
+      origin = origin,
+      destination = zone.point,
+      mode = mode,
+      hazards = hazards,
+      destinationName = zone.name
+    )
+    _uiState.update {
+      it.copy(
+        activeRoute = fallback,
+        alternativeRoutes = emptyList(),
+        isCalculatingRoute = false,
+        routeStatus = RouteStatus.FALLBACK_UNVERIFIED,
+        routeStatusMessage = "UNVERIFIED ESTIMATE — this is a direct hazard-skirting " +
+          "line, NOT a road route and NOT validated against road closures. Use with caution.",
+        currentNavigationStepIndex = 0
+      )
+    }
+  }
+
+  /**
    * Computes alternative corridors to the selected shelter so the user can
-   * compare safety vs distance.
+   * compare safety vs distance. Never silently dead: with no destination yet
+   * it auto-selects the best-ranked shelter first, and with no feasible
+   * shelter at all it says so instead of doing nothing.
    */
   fun loadAlternativeRoutes() {
-    val zone = _uiState.value.selectedSafeZone ?: return
+    var zone = _uiState.value.selectedSafeZone
+    if (zone == null) {
+      val best = _uiState.value.rankedShelters.firstOrNull()
+      if (best == null) {
+        _uiState.update {
+          it.copy(snackbarMessage = "No safe zone to route to — switch the simulated demo data on to see the India shelter network, then pick a green shelter")
+        }
+        return
+      }
+      selectSafeZone(best.zone, autoRoute = false)
+      zone = best.zone
+    }
+    val target = zone
     routingJob?.cancel()
-    lastRouteOrigin = _uiState.value.userLocation
+    val origin = _uiState.value.userLocation
+    val mode = _uiState.value.travelMode
+    val hazards = _uiState.value.hazardZones
+    lastRouteOrigin = origin
+    // Nothing is drawn until verified road corridors arrive (no straight-line
+    // placeholder). Synthetic offline detours are filtered out below.
+    _uiState.update {
+      it.copy(
+        activeRoute = null,
+        alternativeRoutes = emptyList(),
+        isCalculatingRoute = true,
+        routeStatus = RouteStatus.REQUESTING,
+        routeStatusMessage = "Requesting alternative road corridors to ${target.name}…",
+        currentNavigationStepIndex = 0
+      )
+    }
     routingJob = viewModelScope.launch {
-      _uiState.update { it.copy(isCalculatingRoute = true) }
       val alternatives = OsrmRoutingService.calculateAlternativeRoutes(
-        origin = _uiState.value.userLocation,
-        destination = zone.point,
-        mode = _uiState.value.travelMode,
-        hazards = _uiState.value.hazardZones,
-        destinationName = zone.name,
+        origin = origin,
+        destination = target.point,
+        mode = mode,
+        hazards = hazards,
+        destinationName = target.name,
         maxAlternatives = 2
       )
+      if (lastRouteOrigin != origin ||
+        _uiState.value.selectedSafeZone?.id != target.id
+      ) return@launch
+
+      // Only real road geometry is offered as an alternative. The offline
+      // detour variants are not roads, so they are never presented as options.
+      val roadAlternatives = alternatives.filter { it.isLiveOsrm }
+      if (roadAlternatives.isEmpty()) {
+        _uiState.update {
+          it.copy(
+            activeRoute = null,
+            alternativeRoutes = emptyList(),
+            isCalculatingRoute = false,
+            routeStatus = RouteStatus.NETWORK_ERROR,
+            routeStatusMessage = "No verified road alternatives available. Nothing is drawn."
+          )
+        }
+        return@launch
+      }
       _uiState.update {
         it.copy(
+          activeRoute = roadAlternatives.first(),
+          alternativeRoutes = roadAlternatives,
           isCalculatingRoute = false,
-          activeRoute = alternatives.firstOrNull() ?: it.activeRoute,
-          alternativeRoutes = alternatives
+          routeStatus = RouteStatus.READY,
+          routeStatusMessage = if (roadAlternatives.size > 1) {
+            "${roadAlternatives.size} verified road corridors to ${target.name} — safest first"
+          } else {
+            "One verified road corridor found to ${target.name}"
+          },
+          currentNavigationStepIndex = 0
         )
       }
     }
@@ -664,6 +758,8 @@ class VippattiViewModel(
         activeRoute = null,
         alternativeRoutes = emptyList(),
         isCalculatingRoute = false,
+        routeStatus = RouteStatus.IDLE,
+        routeStatusMessage = null,
         isNavigatingLive = false,
         currentNavigationStepIndex = 0,
         snackbarMessage = "Evacuation route cleared"
@@ -683,7 +779,13 @@ class VippattiViewModel(
    * (NOT simply the nearest) and routes to it.
    */
   fun selectBestSafeZone() {
-    val best = _uiState.value.rankedShelters.firstOrNull() ?: return
+    val best = _uiState.value.rankedShelters.firstOrNull()
+    if (best == null) {
+      _uiState.update {
+        it.copy(snackbarMessage = "No feasible shelter right now — switch the simulated demo data on to see the India demo network")
+      }
+      return
+    }
     selectSafeZone(best.zone, autoRoute = true)
     _uiState.update {
       it.copy(snackbarMessage = "Best safe zone selected: ${best.zone.name} — ${best.rankExplanation}")
@@ -693,16 +795,39 @@ class VippattiViewModel(
   // =========================================================== NAVIGATION
 
   fun startEvacuationRoute() {
-    val zone = _uiState.value.selectedSafeZone ?: return
+    var zone = _uiState.value.selectedSafeZone
+    if (zone == null) {
+      val best = _uiState.value.rankedShelters.firstOrNull()
+      if (best == null) {
+        _uiState.update {
+          it.copy(snackbarMessage = "No safe zone to route to — switch the simulated demo data on to see the India shelter network, then pick a green shelter")
+        }
+        return
+      }
+      selectSafeZone(best.zone, autoRoute = false)
+      zone = best.zone
+    }
+    val target = zone
+
+    // Guidance may only start on a route that actually exists. Starting it on an
+    // empty corridor produced a HUD with no geometry behind it.
+    if (_uiState.value.activeRoute == null) {
+      _uiState.update {
+        it.copy(
+          currentTab = ScreenTab.RADAR_MAP,
+          snackbarMessage = "Requesting the road route to ${target.name}… guidance starts when it arrives"
+        )
+      }
+      calculateRouteToSelectedZone()
+      return
+    }
+
     _uiState.update {
       it.copy(
         isNavigatingLive = true,
         currentTab = ScreenTab.RADAR_MAP,
-        snackbarMessage = "Live guidance to ${zone.name} started"
+        snackbarMessage = "Guidance to ${target.name} started"
       )
-    }
-    if (_uiState.value.activeRoute == null) {
-      calculateRouteToSelectedZone()
     }
   }
 
@@ -743,8 +868,12 @@ class VippattiViewModel(
   fun toggleOfflineCache(active: Boolean) {
     _uiState.update {
       it.copy(
-        is100PercentOfflineCached = active,
-        snackbarMessage = if (active) "Offline survival pack & OSM tiles cached" else "Switched to live streaming mode"
+        isOfflineFirstMode = active,
+        snackbarMessage = if (active) {
+          "Offline-first mode ON — keep browsing to keep tiles; there is no bulk offline download in this build"
+        } else {
+          "Offline-first mode OFF"
+        }
       )
     }
   }
@@ -756,6 +885,7 @@ class VippattiViewModel(
    */
   fun syncData() {
     syncDisasterData()
+    refreshWeather(force = true)
     newsJob?.cancel()
     newsJob = viewModelScope.launch {
       _uiState.update { it.copy(isSyncing = true) }
@@ -768,7 +898,7 @@ class VippattiViewModel(
             feed.articles.isNotEmpty() && feed.error == null ->
               "Disaster intelligence refreshed — ${feed.articles.size} live GNews articles"
             feed.error != null -> feed.error.userMessage
-            else -> "No GNews articles matched the pilot queries — try again later"
+            else -> "No GNews articles matched the search queries — try again later"
           }
         )
       }
@@ -884,7 +1014,7 @@ class VippattiViewModel(
     _uiState.update {
       it.copy(
         userIsSafe = true,
-        snackbarMessage = "Status updated: Marked as SAFE on SARANA network"
+        snackbarMessage = "Status updated on this device: marked SAFE"
       )
     }
   }
@@ -901,7 +1031,24 @@ class VippattiViewModel(
   }
 
   fun dismissSosDialog() {
-    _uiState.update { it.copy(showSosBroadcastDialog = false) }
+    // BUG-1 FIX — the Local SOS flow now has a real COMPLETION state.
+    //
+    // Previously "Keep The Local SOS Active" (and back / outside-tap dismissal)
+    // only closed the dialog and left `isSosActive = true` forever, so the global
+    // ActiveToolsBar stayed injected above the screen content on every tab — the
+    // reported "Home screen becomes broken after completing the SOS flow".
+    // Dismissing the record dialog is now an explicit completion: the dialog
+    // closes, the SOS flag and the safety switch reset, and the saved LOCAL
+    // record is summarised exactly once.
+    _uiState.update {
+      it.copy(
+        showSosBroadcastDialog = false,
+        isSosActive = false,
+        userIsSafe = true,
+        snackbarMessage = it.lastReportReceipt?.note
+          ?: "Local SOS record closed. Nothing was transmitted."
+      )
+    }
   }
 
   fun cancelSosBroadcast() {
@@ -909,7 +1056,8 @@ class VippattiViewModel(
       it.copy(
         showSosBroadcastDialog = false,
         isSosActive = false,
-        snackbarMessage = "SOS emergency broadcast canceled"
+        userIsSafe = true,
+        snackbarMessage = "Local SOS canceled — nothing was transmitted or recorded as active"
       )
     }
   }
@@ -919,8 +1067,9 @@ class VippattiViewModel(
   }
 
   /**
-   * Confirms the "Are you sure?" gate: arms the live SOS broadcast and files
-   * the corresponding NDRF distress report through EmergencyReportService.
+   * Confirms the "Are you sure?" gate: saves the LOCAL SOS record (this build has
+   * no relief-network backend, so nothing is transmitted to NDRF or any other
+   * authority) and shows the record dialog.
    */
   fun confirmSosBroadcast() {
     _uiState.update {
@@ -970,31 +1119,81 @@ class VippattiViewModel(
     _uiState.update { it.copy(batteryPercent = percent, isBatteryCharging = isCharging) }
   }
 
+  /**
+   * Torch toggle. The state is EXPLICIT ([TorchState]) and the platform outcome
+   * is reported back by MainActivity through [onTorchResult], so the UI can never
+   * claim "ON" when the camera service refused. Deliberately NO snackbar: the
+   * button's own ON/OFF state plus the global active-tools bar carry the state,
+   * which is what made the old feedback look like an undismissable popup.
+   */
   fun toggleFlashlight() {
     _uiState.update {
-      val next = !it.isFlashlightOn
-      it.copy(
-        isFlashlightOn = next,
-        snackbarMessage = if (next) "Emergency Flashlight turned ON" else "Flashlight turned OFF"
-      )
+      if (it.torchState == TorchState.ON) {
+        it.copy(torchState = TorchState.OFF, torchMessage = null)
+      } else {
+        it.copy(torchState = TorchState.ON, torchMessage = null)
+      }
     }
   }
 
-  fun toggleSiren() {
-    val willActivate = !_uiState.value.isSirenOn
-    _uiState.update {
-      it.copy(
-        isSirenOn = willActivate,
-        snackbarMessage = if (willActivate) "HIGH-DECIBEL SOS SIREN ACTIVE" else "SOS Siren deactivated"
-      )
-    }
-    sirenJob?.cancel()
-    if (willActivate) {
-      sirenJob = viewModelScope.launch {
-        delay(60000)
-        _uiState.update { it.copy(isSirenOn = false) }
+  /**
+   * Real platform result for the torch request made by MainActivity.
+   * [permissionDenied] distinguishes "ask again after granting" from
+   * "this device cannot do it", both shown in place under the Light control.
+   */
+  fun onTorchResult(success: Boolean, reason: String? = null, permissionDenied: Boolean = false) {
+    _uiState.update { state ->
+      if (success && state.torchState == TorchState.ON) {
+        state.copy(torchState = TorchState.ON, torchMessage = null)
+      } else if (success) {
+        // The user switched it off while the request was in flight.
+        state.copy(torchState = TorchState.OFF, torchMessage = null)
+      } else {
+        state.copy(
+          torchState = if (permissionDenied) TorchState.PERMISSION_DENIED else TorchState.UNAVAILABLE,
+          torchMessage = reason ?: "This device did not allow the torch to turn on."
+        )
       }
     }
+  }
+
+  /** Explicit start/stop for the siren; a second tap always stops it. */
+  fun toggleSiren() {
+    if (_uiState.value.sirenState == SirenState.PLAYING) stopSiren() else startSiren()
+  }
+
+  /**
+   * Starts the siren with a live countdown and a hard auto-stop, so the tool can
+   * never keep running unseen after the user leaves the Instructions screen.
+   */
+  fun startSiren() {
+    sirenJob?.cancel()
+    _uiState.update {
+      it.copy(sirenState = SirenState.PLAYING, sirenSecondsLeft = SIREN_MAX_SECONDS)
+    }
+    sirenJob = viewModelScope.launch {
+      var left = SIREN_MAX_SECONDS
+      while (left > 0) {
+        delay(1000)
+        left--
+        _uiState.update { it.copy(sirenSecondsLeft = left) }
+      }
+      // Auto-stop: state and hardware both return to IDLE together.
+      _uiState.update { it.copy(sirenState = SirenState.IDLE, sirenSecondsLeft = 0) }
+    }
+  }
+
+  /** Stops the siren immediately (used by the button and the global stop). */
+  fun stopSiren() {
+    sirenJob?.cancel()
+    sirenJob = null
+    _uiState.update { it.copy(sirenState = SirenState.IDLE, sirenSecondsLeft = 0) }
+  }
+
+  /** Global "stop everything" used by the always-visible active-tools bar. */
+  fun stopAllDeviceTools() {
+    stopSiren()
+    _uiState.update { it.copy(torchState = TorchState.OFF, torchMessage = null) }
   }
 
   // ======================= SITUATION REPORTS (NDRF) ========================
@@ -1047,11 +1246,11 @@ class VippattiViewModel(
         )
       } catch (e: Exception) {
         ReportReceipt(
-          reportId = "NDRF-ERR",
+          reportId = "LOCAL-ERR",
           accepted = false,
-          relayChannel = NdrfEmergencyReportService.RELAY_CHANNEL,
+          relayChannel = LocalEmergencyReportService.RELAY_CHANNEL,
           etaMinutes = null,
-          note = "Report failed: ${e.message ?: "dispatcher unreachable"}"
+          note = "Could not save the local report: ${e.message ?: "unexpected error"}. Nothing was transmitted or recorded."
         )
       }
       _uiState.update {

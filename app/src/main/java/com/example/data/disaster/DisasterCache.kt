@@ -95,13 +95,21 @@ class DisasterFileCache(cacheDir: File) : DisasterCache {
     try {
       val arr = JSONArray()
       feed.events.forEach { arr.put(serializeEvent(it)) }
-      shardFile(source).writeText(
+      val target = shardFile(source)
+      // Atomic write: a process kill mid-write must not leave a truncated
+      // shard that would blank the whole cache on next read.
+      val tmp = File(dir, "${target.name}.tmp")
+      tmp.writeText(
         JSONObject()
           .put("fetchedAtMillis", feed.fetchedAtMillis)
           .put("statusMessage", feed.statusMessage ?: "")
           .put("events", arr)
           .toString()
       )
+if (!tmp.renameTo(target)) {
+        target.writeText(tmp.readText())
+        tmp.delete()
+      }
     } catch (e: Exception) {
       // Non-fatal: live rendering still works without cache persistence.
     }

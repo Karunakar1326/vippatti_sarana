@@ -1,9 +1,14 @@
 ﻿package com.example.ui.components
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Paint
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,10 +24,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -43,12 +50,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.Dp
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.preference.PreferenceManager
-import com.example.data.PilotRegionData
+import com.example.data.disaster.PilotRegionData
 import com.example.data.disaster.DisasterEvent
 import com.example.data.disaster.DisasterLayer
 import com.example.data.disaster.DisasterSource
@@ -66,6 +74,7 @@ import com.example.ui.theme.ObsidianContainer
 import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.TacticalOnSurfaceVariant
 import com.example.ui.theme.TacticalOutlineVariant
+import com.example.ui.theme.WarningAmber
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint as OsmGeoPoint
@@ -75,6 +84,7 @@ import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 import java.io.File
+import kotlinx.coroutines.delay
 
 /**
  * Turn-by-turn live navigation status reported by the map engine.
@@ -91,16 +101,34 @@ data class LiveNavStatus(
 )
 
 private const val ROUTE_COLOR = 0xFF00E297.toInt()     // High-visibility emergency green
-private const val ROUTE_COLOR_DANGER = 0xFFFF1744.toInt()
 private const val ROUTE_WIDTH = 10.0f
+
+/**
+ * Explicit states of the GPS "locate me" request driven by the recenter
+ * button. Every state has a user-visible message — the button never silently
+ * jumps to the labeled fallback area and never presents fallback coordinates
+ * as a real GPS fix.
+ */
+enum class GpsRequestState {
+  IDLE,
+  REQUESTING,
+  SUCCESS,
+  NO_PERMISSION,
+  PERMANENTLY_DENIED,
+  PROVIDER_DISABLED,
+  UNAVAILABLE,
+  TIMEOUT
+}
 
 /**
  * THE single map engine of the application ? OSMDroid + OpenStreetMap with
  * OSRM road routing.
  *
  * Visual language (no tiny dot markers for zones):
- *   HAZARD    = large faded pulsing danger circles (PulsingZoneOverlay)
- *   SAFE ZONE = large faded pulsing safe circles (PulsingZoneOverlay)
+ *   HAZARD    = large faded pulsing circles in the DISASTER-TYPE color
+ *               (flood blue, fire orange, cyclone purple ... — see
+ *               DisasterTypeColors; legend row above the map keys each color)
+ *   SAFE ZONE = large faded pulsing safe circles (emerald = open, amber = full)
  *   USER      = hardware GPS location overlay (dot + accuracy ring)
  *   ROUTE     = OSRM evacuation polyline
  */
@@ -112,7 +140,6 @@ fun OsmDroidRadarMapView(
   activeRoute: RouteResult?,
   travelMode: String, // "foot" or "driving"
   onClearRoute: () -> Unit,
-  onSafeZoneSelected: (SafeZone) -> Unit,
   onHazardZoneTapped: (HazardZone) -> Unit,
   onSafeZoneTapped: (SafeZone) -> Unit,
   onRealGpsFix: (latitude: Double, longitude: Double) -> Unit,
@@ -143,17 +170,24 @@ fun OsmDroidRadarMapView(
   // degrade to the India-fallback view without explanation (audit item 11).
   var showPermissionRationale by remember { mutableStateOf(false) }
 
+  // Tracks whether a permission request was ever launched: without this, a
+  // first-ever press (shouldShowRationale == false) is indistinguishable from
+  // a permanently-denied ("don't ask again") press.
+  var locationPermissionAsked by remember { mutableStateOf(hasLocationPermission) }
+
   val permissionLauncher = rememberLauncherForActivityResult(
     ActivityResultContracts.RequestMultiplePermissions()
   ) { permissions ->
     hasLocationPermission = (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true) ||
       (permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true)
+    locationPermissionAsked = true
     // Only nag with the rationale after an explicit denial (not on first ask).
     showPermissionRationale = !hasLocationPermission
   }
 
   LaunchedEffect(Unit) {
     if (!hasLocationPermission) {
+      locationPermissionAsked = true
       permissionLauncher.launch(
         arrayOf(
           Manifest.permission.ACCESS_FINE_LOCATION,
@@ -164,7 +198,23 @@ fun OsmDroidRadarMapView(
   }
 
   val mapState = remember {
-    OsmMapControllerHolder(context) { /* HUD handled by parent screen */ }
+    // Application context on purpose: the holder outlives a single Activity
+    // instance across configuration changes and must never retain the Activity.
+    OsmMapControllerHolder(context.applicationContext) { /* HUD handled by parent screen */ }
+  }
+
+  // GPS locate state drives the recenter button feedback + status banner.
+  // (Plain reads: the holder owns the mutableStateOf delegates; reading the
+  // values here still subscribes this composition to changes.)
+  val gpsState = mapState.gpsRequestState
+  val gpsMessage = mapState.gpsStatusMessage
+
+  // Success banners auto-dismiss; errors stay until dismissed or retried.
+  LaunchedEffect(gpsState) {
+    if (gpsState == GpsRequestState.SUCCESS) {
+      delay(4000)
+      mapState.clearGpsStatus()
+    }
   }
 
   LaunchedEffect(travelMode) { mapState.setTravelMode(travelMode) }
@@ -175,10 +225,10 @@ fun OsmDroidRadarMapView(
 
   // REDEPLOY ZONE OVERLAYS WHEN STATE CHANGES (audit item 4). The factory runs
   // exactly once, so hazard/safe-zone lists that arrive after first composition
-  // (disaster sync completes, demo mode toggles, live events expire) previously
+  // (disaster sync completes, mock toggle flips, live events expire) previously
   // never reached the map. drawRoute stays guarded separately below.
   LaunchedEffect(hazardZones) { mapState.deployHazardZones(hazardZones, onHazardZoneTapped) }
-  LaunchedEffect(safeZones) { mapState.deploySafeZones(safeZones, onSafeZoneSelected, onSafeZoneTapped) }
+  LaunchedEffect(safeZones) { mapState.deploySafeZones(safeZones, onSafeZoneTapped) }
   LaunchedEffect(
     disasterEvents, enabledLayers,
     enabledLayers.contains(DisasterLayer.EARTHQUAKES),
@@ -208,18 +258,16 @@ fun OsmDroidRadarMapView(
     lifecycleOwner.lifecycle.addObserver(observer)
     onDispose {
       lifecycleOwner.lifecycle.removeObserver(observer)
-      mapState.cleanup()
     }
   }
 
   Box(modifier = modifier.fillMaxSize()) {
     AndroidView(
-      factory = { ctx ->
+      factory = { _ ->
         val view = mapState.initMapView(
-          context = ctx,
+          context = context.applicationContext,
           hazardZones = hazardZones,
           safeZones = safeZones,
-          onSafeZoneSelected = onSafeZoneSelected,
           onHazardZoneTapped = onHazardZoneTapped,
           onSafeZoneTapped = onSafeZoneTapped,
           onRealGpsFix = onRealGpsFix
@@ -229,6 +277,12 @@ fun OsmDroidRadarMapView(
       update = { _ ->
         if (hasLocationPermission) mapState.enableLocationTracking()
       },
+      // The MapView is torn down HERE — when the view is actually removed from
+      // composition — not in DisposableEffect.onDispose, which fires while the
+      // view is still attached (and possibly still drawing during Crossfade /
+      // activity recreation). Teardown runs exactly once, after the view has
+      // been released. See OsmMapControllerHolder.cleanup().
+      onRelease = { mapState.cleanup() },
       modifier = Modifier.fillMaxSize()
     )
 
@@ -274,6 +328,54 @@ fun OsmDroidRadarMapView(
       }
     }
 
+    // GPS locate status (Issue 2): every locate state carries a message —
+    // locating spinner, success, permission, provider-off, timeout. Errors
+    // stay until dismissed or retried; success auto-dismisses above.
+    if (gpsMessage != null) {
+      Row(
+        modifier = Modifier
+          .align(Alignment.TopCenter)
+          .padding(top = topOverlayPadding + 8.dp, start = 10.dp, end = 10.dp)
+          .clip(RoundedCornerShape(10.dp))
+          .background(ObsidianContainer.copy(alpha = 0.96f))
+          .border(1.dp, TacticalOutlineVariant.copy(alpha = 0.7f), RoundedCornerShape(10.dp))
+          .padding(horizontal = 10.dp, vertical = 6.dp)
+          .testTag("gps_status_banner"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+      ) {
+        if (gpsState == GpsRequestState.REQUESTING) {
+          CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 2.dp,
+            color = NeonEmerald
+          )
+        }
+        Text(
+          text = gpsMessage,
+          fontSize = 10.sp,
+          fontWeight = FontWeight.Medium,
+          color = when (gpsState) {
+            GpsRequestState.SUCCESS -> NeonEmerald
+            GpsRequestState.REQUESTING -> TacticalOnSurface
+            else -> WarningAmber
+          },
+          modifier = Modifier.weight(1f, fill = false)
+        )
+        IconButton(
+          onClick = { mapState.clearGpsStatus() },
+          modifier = Modifier.size(30.dp)
+        ) {
+          Icon(
+            Icons.Default.Close,
+            contentDescription = "Dismiss location message",
+            tint = TacticalOnSurfaceVariant,
+            modifier = Modifier.size(16.dp)
+          )
+        }
+      }
+    }
+
     // ---------------- Floating map controls (right edge, one-hand reachable) --
     Column(
       modifier = Modifier
@@ -290,8 +392,40 @@ fun OsmDroidRadarMapView(
       MapControlButton(Icons.Default.Remove, "Zoom Out", TacticalOnSurface, "osmdroid_zoom_out_button") {
         mapState.zoomOut()
       }
-      MapControlButton(Icons.Default.MyLocation, "Recenter My Location", NeonEmerald, "osmdroid_recenter_button") {
-        mapState.recenterUser()
+      MapControlButton(
+        Icons.Default.MyLocation,
+        if (gpsState == GpsRequestState.REQUESTING) "Locating…" else "Recenter My Location",
+        NeonEmerald,
+        "osmdroid_recenter_button",
+        loading = gpsState == GpsRequestState.REQUESTING
+      ) {
+        // Permanently-denied = user checked "don't ask again" (or the OEM
+        // auto-denied): asking again is pointless, point at Settings instead.
+        // First-ever presses must NOT be misread as permanently denied.
+        val activity = context as? Activity
+        val permanentlyDenied = !hasLocationPermission && locationPermissionAsked &&
+          activity != null &&
+          !ActivityCompat.shouldShowRequestPermissionRationale(
+            activity, Manifest.permission.ACCESS_FINE_LOCATION
+          ) &&
+          !ActivityCompat.shouldShowRequestPermissionRationale(
+            activity, Manifest.permission.ACCESS_COARSE_LOCATION
+          )
+        mapState.requestRecenter(
+          context = context,
+          hasPermission = hasLocationPermission,
+          permissionPermanentlyDenied = permanentlyDenied,
+          onPermissionRequest = {
+            locationPermissionAsked = true
+            permissionLauncher.launch(
+              arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+              )
+            )
+          },
+          onFix = onRealGpsFix
+        )
       }
       MapControlButton(Icons.Default.DeleteSweep, "Clear Route", EmergencyRed, "osmdroid_clear_route_button") {
         // Route clearing flows through the ViewModel (single source of
@@ -312,7 +446,7 @@ fun OsmDroidRadarMapView(
         .padding(horizontal = 6.dp, vertical = 3.dp)
     ) {
       Text(
-        text = "Idukki ? Kerala ? India ? osmdroid / OpenStreetMap / OSRM",
+        text = "India ? osmdroid / OpenStreetMap / OSRM",
         fontSize = 9.sp,
         fontWeight = FontWeight.Medium,
         color = TacticalOnSurfaceVariant
@@ -327,6 +461,7 @@ private fun MapControlButton(
   description: String,
   tint: androidx.compose.ui.graphics.Color,
   testTag: String,
+  loading: Boolean = false,
   onClick: () -> Unit
 ) {
   IconButton(
@@ -338,7 +473,15 @@ private fun MapControlButton(
       .border(1.dp, TacticalOutlineVariant, RoundedCornerShape(8.dp))
       .testTag(testTag)
   ) {
-    Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(18.dp))
+    if (loading) {
+      CircularProgressIndicator(
+        modifier = Modifier.size(18.dp),
+        strokeWidth = 2.dp,
+        color = tint
+      )
+    } else {
+      Icon(icon, contentDescription = description, tint = tint, modifier = Modifier.size(18.dp))
+    }
   }
 }
 
@@ -373,7 +516,6 @@ class OsmMapControllerHolder(
     context: Context,
     hazardZones: List<HazardZone>,
     safeZones: List<SafeZone>,
-    onSafeZoneSelected: (SafeZone) -> Unit,
     onHazardZoneTapped: (HazardZone) -> Unit,
     onSafeZoneTapped: (SafeZone) -> Unit,
     onRealGpsFix: (latitude: Double, longitude: Double) -> Unit
@@ -388,8 +530,15 @@ class OsmMapControllerHolder(
     osmConfig.osmdroidBasePath = basePath
     osmConfig.osmdroidTileCache = tilePath
 
-    // 2. Create MapView ? opens directly on the India pilot region.
+    // 2. Create MapView ? opens directly on the India network region.
     val view = MapView(context).apply {
+      // Disable osmdroid's auto-detach-on-removal so teardown happens EXACTLY
+      // once, from AndroidView.onRelease (OsmMapControllerHolder.cleanup).
+      // With the default destroy-mode the framework also calls onDetach() from
+      // onDetachedFromWindow when the view leaves the window — a second,
+      // unguarded teardown of an already-detached map (the source of the
+      // rotation/tab-switch crashes seen here before this fix).
+      setDestroyMode(false)
       setTileSource(tileSources[0])
       setMultiTouchControls(true)
       zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
@@ -432,18 +581,21 @@ class OsmMapControllerHolder(
     deployHazardZones(hazardZones, onHazardZoneTapped)
 
     // 5. Deploy LARGE pulsing safe zones (safe areas).
-    deploySafeZones(safeZones, onSafeZoneSelected, onSafeZoneTapped)
+    deploySafeZones(safeZones, onSafeZoneTapped)
 
     return view
   }
 
-  /** Severity-colored large faded danger circles (idempotent: stale overlays removed first). */
+  /** Disaster-colored large faded danger circles (idempotent: stale overlays removed first). */
   fun deployHazardZones(
     hazardZones: List<HazardZone>,
     onHazardZoneTapped: (HazardZone) -> Unit
   ) {
     val view = mapView ?: return
-    hazardZoneOverlays.forEach { view.overlays.remove(it) }
+    hazardZoneOverlays.forEach { overlay ->
+      overlay.stop()
+      view.overlays.remove(overlay)
+    }
     hazardZoneOverlays.clear()
 
     hazardZones.forEach { zone ->
@@ -462,14 +614,25 @@ class OsmMapControllerHolder(
     view.invalidate()
   }
 
-  /** Green-toned large faded safe-area circles; full shelters get amber/red. Idempotent. */
+  /**
+   * Green-toned large faded safe-area circles; full shelters get amber/red.
+   * Idempotent.
+   *
+   * A tap opens READ-ONLY information only. It deliberately does NOT select the
+   * shelter or start a route any more: a single tap on the map used to both open
+   * a modal dialog AND silently re-route to that shelter, which is what made map
+   * taps feel like an unwanted popup. Routing now requires the explicit
+   * "Route To This Safe Zone" action inside the info panel.
+   */
   fun deploySafeZones(
     safeZones: List<SafeZone>,
-    onSafeZoneSelected: (SafeZone) -> Unit,
     onSafeZoneTapped: (SafeZone) -> Unit
   ) {
     val view = mapView ?: return
-    safeZoneOverlays.forEach { view.overlays.remove(it) }
+    safeZoneOverlays.forEach { overlay ->
+      overlay.stop()
+      view.overlays.remove(overlay)
+    }
     safeZoneOverlays.clear()
 
     safeZones.forEach { zone ->
@@ -482,10 +645,7 @@ class OsmMapControllerHolder(
         radiusMeters = SAFE_ZONE_RADIUS_METERS,
         baseColorArgb = color,
         pulsePeriodMs = SAFE_ZONE_PULSE_MS,
-        onZoneTapped = {
-          onSafeZoneTapped(zone)
-          onSafeZoneSelected(zone)
-        }
+        onZoneTapped = { onSafeZoneTapped(zone) }
       )
       safeZoneOverlays.add(overlay)
       view.overlays.add(0, overlay)
@@ -506,7 +666,10 @@ class OsmMapControllerHolder(
     onEventTapped: (DisasterEvent) -> Unit
   ) {
     val view = mapView ?: return
-    disasterEventOverlays.forEach { view.overlays.remove(it) }
+    disasterEventOverlays.forEach { overlay ->
+      overlay.stop()
+      view.overlays.remove(overlay)
+    }
     disasterEventOverlays.clear()
 
     val zoom = view.zoomLevelDouble
@@ -563,20 +726,16 @@ class OsmMapControllerHolder(
     view.invalidate()
   }
 
-  /** Honest marker colors: red family for life-safety sources, amber for user reports. */
-  private fun disasterMarkerColor(event: DisasterEvent): Int = when {
-    event.source == DisasterSource.USER_REPORT -> 0xFFF59E0B.toInt()
-    event.severity == HazardSeverity.EXTREME -> 0xFFFF1744.toInt()
-    event.severity == HazardSeverity.HIGH -> 0xFFFF9100.toInt()
-    else -> 0xFFAB47BC.toInt()
+  /** Zone color follows the DISASTER TYPE (flood blue, fire orange ...). */
+  private fun disasterMarkerColor(event: DisasterEvent): Int {
+    if (event.source == DisasterSource.USER_REPORT) return 0xFFF59E0B.toInt()
+    return com.example.data.disaster.DisasterTypeColors.argbFor(
+      com.example.data.disaster.DisasterEventNormalizer.toHazardType(event.disasterType)
+    )
   }
 
-  private fun hazardColor(zone: HazardZone): Int = when (zone.severity) {
-    com.example.data.model.HazardSeverity.EXTREME -> 0xFFFF1744.toInt()
-    com.example.data.model.HazardSeverity.HIGH -> 0xFFFF9100.toInt()
-    com.example.data.model.HazardSeverity.MODERATE -> 0xFFAB47BC.toInt()
-    com.example.data.model.HazardSeverity.LOW -> 0xFFFDD835.toInt()
-  }
+  private fun hazardColor(zone: HazardZone): Int =
+    com.example.data.disaster.DisasterTypeColors.argbFor(zone.type)
 
   // ------------------------------------------------------------ controls
 
@@ -585,6 +744,7 @@ class OsmMapControllerHolder(
   }
 
   fun enableLocationTracking() {
+    val view = mapView ?: return
     locationOverlay?.let {
       if (!it.isMyLocationEnabled) {
         it.enableMyLocation()
@@ -593,15 +753,155 @@ class OsmMapControllerHolder(
     }
   }
 
+  // ------------------------------------------------ GPS locate (Issue 2)
+
+  /** Current locate request state — observed by the recenter button + banner. */
+  var gpsRequestState by mutableStateOf(GpsRequestState.IDLE)
+    private set
+
+  /** User-visible message for [gpsRequestState]; null hides the banner. */
+  var gpsStatusMessage by mutableStateOf<String?>(null)
+    private set
+
+  private var oneShotListener: LocationListener? = null
+  private var oneShotActive = false
+  private val mainHandler = Handler(Looper.getMainLooper())
+  private var timeoutRunnable: Runnable? = null
+
+  /** Dismisses the banner (success auto-dismisses; errors stay until this). */
+  fun clearGpsStatus() {
+    gpsStatusMessage = null
+    if (gpsRequestState != GpsRequestState.REQUESTING) gpsRequestState = GpsRequestState.IDLE
+  }
+
+  /**
+   * GPS "locate me" flow for the recenter button. Delivers immediate feedback
+   * ([GpsRequestState.REQUESTING] + spinner/banner), then centers in order:
+   * live overlay fix → OS last-known → one-shot listener with a hard
+   * [LOCATION_TIMEOUT_MS] timeout. Exactly one one-shot listener ever exists
+   * (repeat presses while locating are ignored; it is removed on fix,
+   * timeout and [cleanup]). The camera moves ONLY on a valid device fix —
+   * never on the labeled fallback area — and a valid fix is reported through
+   * [onFix] so the ViewModel replaces the fallback honestly.
+   */
+  fun requestRecenter(
+    context: Context,
+    hasPermission: Boolean,
+    permissionPermanentlyDenied: Boolean,
+    onPermissionRequest: () -> Unit,
+    onFix: (latitude: Double, longitude: Double) -> Unit
+  ) {
+    if (oneShotActive) return
+    cancelOneShot()
+    if (!hasPermission) {
+      if (permissionPermanentlyDenied) {
+        gpsRequestState = GpsRequestState.PERMANENTLY_DENIED
+        gpsStatusMessage = "Location permission blocked — enable it in Settings to use GPS."
+      } else {
+        gpsRequestState = GpsRequestState.NO_PERMISSION
+        gpsStatusMessage = "Location permission needed for GPS."
+        onPermissionRequest()
+      }
+      return
+    }
+    val locationManager =
+      context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+    if (locationManager == null) {
+      gpsRequestState = GpsRequestState.UNAVAILABLE
+      gpsStatusMessage = "Location unavailable on this device."
+      return
+    }
+    val gpsOn = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+    val networkOn = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+    if (!gpsOn && !networkOn) {
+      gpsRequestState = GpsRequestState.PROVIDER_DISABLED
+      gpsStatusMessage = "Location services are OFF — enable GPS or network location."
+      return
+    }
+    gpsRequestState = GpsRequestState.REQUESTING
+    gpsStatusMessage = "Locating…"
+    val view = mapView
+
+    // Fast path 1: the overlay already holds a real device fix (reported to
+    // the ViewModel when it arrived — just center on it).
+    locationOverlay?.myLocation?.let { fix ->
+      view?.controller?.animateTo(fix)
+      gpsRequestState = GpsRequestState.SUCCESS
+      gpsStatusMessage = "Centered on your GPS location."
+      return
+    }
+    // Fast path 2: the OS last-known location — real device data (may be
+    // stale, so it is labeled as such and also reported as a real fix).
+    val lastKnown = try {
+      locationManager.getLastKnownLocation(
+        if (gpsOn) LocationManager.GPS_PROVIDER else LocationManager.NETWORK_PROVIDER
+      )
+    } catch (_: SecurityException) { null }
+    if (lastKnown != null) {
+      view?.controller?.animateTo(OsmGeoPoint(lastKnown.latitude, lastKnown.longitude))
+      gpsRequestState = GpsRequestState.SUCCESS
+      gpsStatusMessage = "Centered on your last known GPS location."
+      onFix(lastKnown.latitude, lastKnown.longitude)
+      return
+    }
+    // Slow path: one-shot listener with a hard timeout. The camera does NOT
+    // move until a valid fix arrives — no disaster/routing wait, no fallback.
+    val listener = LocationListener { location ->
+      cancelOneShot()
+      mapView?.controller?.animateTo(OsmGeoPoint(location.latitude, location.longitude))
+      gpsRequestState = GpsRequestState.SUCCESS
+      gpsStatusMessage = "Centered on your GPS location."
+      onFix(location.latitude, location.longitude)
+    }
+    oneShotListener = listener
+    oneShotActive = true
+    try {
+      if (gpsOn) locationManager.requestLocationUpdates(
+        LocationManager.GPS_PROVIDER, 0L, 0f, listener, Looper.getMainLooper()
+      )
+      if (networkOn) locationManager.requestLocationUpdates(
+        LocationManager.NETWORK_PROVIDER, 0L, 0f, listener, Looper.getMainLooper()
+      )
+    } catch (_: SecurityException) {
+      cancelOneShot()
+      gpsRequestState = GpsRequestState.NO_PERMISSION
+      gpsStatusMessage = "Location permission needed for GPS."
+      return
+    }
+    val timeout = Runnable {
+      cancelOneShot()
+      gpsRequestState = GpsRequestState.TIMEOUT
+      gpsStatusMessage =
+        "Could not get a GPS fix in ${LOCATION_TIMEOUT_MS / 1000}s — try outdoors with a clear sky view."
+    }
+    timeoutRunnable = timeout
+    mainHandler.postDelayed(timeout, LOCATION_TIMEOUT_MS)
+  }
+
+  /** Removes the one-shot listener + timeout; safe to call when idle. */
+  private fun cancelOneShot() {
+    timeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+    timeoutRunnable = null
+    oneShotListener?.let { listener ->
+      try {
+        (appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager)
+          ?.removeUpdates(listener)
+      } catch (_: Exception) { }
+    }
+    oneShotListener = null
+    oneShotActive = false
+  }
+
   fun recenterUser() {
     val myLoc = locationOverlay?.myLocation
     if (myLoc != null) {
       mapView?.controller?.animateTo(myLoc)
     } else {
-      // No GPS fix yet ? fall back to the India pilot region center (labeled).
-      mapView?.controller?.animateTo(
-        OsmGeoPoint(PilotRegionData.FALLBACK_USER_LOCATION.lat, PilotRegionData.FALLBACK_USER_LOCATION.lon)
-      )
+      // No fix: say so honestly instead of silently jumping the camera to
+      // the labeled fallback area (that jump presented fallback coordinates
+      // as the user's real GPS location).
+      gpsRequestState = GpsRequestState.UNAVAILABLE
+      gpsStatusMessage = "No GPS fix yet — press locate once a fix is available."
     }
   }
 
@@ -628,7 +928,26 @@ class OsmMapControllerHolder(
     onLiveNavStatusChanged(LiveNavStatus(isActive = false))
   }
 
-  /** Renders the current OSRM evacuation polyline (called on route changes). */
+  /**
+   * Renders the current evacuation polyline (called on route changes).
+   * Live OSRM road routes draw SOLID (exact road pathway); the instant
+   * offline corridor draws DASHED so it reads as a provisional preview
+   * until the road route swaps in — never mistaken for surveyed roads.
+   *
+   * The RECOMMENDED route always draws GREEN ([ROUTE_COLOR]) — including
+   * routes whose safety status is CAUTION/DANGER. Danger semantics live in
+   * the route panel ("ROUTE SAFETY" label + hazard warnings) and in the
+   * hazard overlays, never in the polyline color: a red recommended route
+   * reads as "do not use" while red zones read as "danger here", and the
+   * two meanings collided on the map.
+   *
+   * Tapping the polyline NEVER shows osmdroid's default blank
+   * bonuspack_bubble InfoWindow: every Polyline is born with one
+   * (MapViewRepository.getDefaultPolylineInfoWindow, empty title/snippet),
+   * and onClickDefault opens it. The click listener below declines the tap
+   * (returns false) so no bubble opens and the tap falls through to zone
+   * overlays underneath.
+   */
   fun displayRoute(route: RouteResult) {
     val mv = mapView ?: return
     currentRoutePolyline?.let { mv.overlays.remove(it) }
@@ -636,10 +955,15 @@ class OsmMapControllerHolder(
     val points = route.pathPoints.map { OsmGeoPoint(it.lat, it.lon) }
     val polyline = Polyline(mv).apply {
       setPoints(points)
-      outlinePaint.color = if (route.routeSafetyStatus == com.example.data.routing.RouteSafetyStatus.DANGER) ROUTE_COLOR_DANGER else ROUTE_COLOR
+      outlinePaint.color = ROUTE_COLOR
       outlinePaint.strokeWidth = ROUTE_WIDTH
       outlinePaint.strokeCap = Paint.Cap.ROUND
       outlinePaint.strokeJoin = Paint.Join.ROUND
+      outlinePaint.pathEffect =
+        if (route.isLiveOsrm) null
+        else android.graphics.DashPathEffect(floatArrayOf(28f, 22f), 0f)
+      // Click-through: no InfoWindow bubble, taps reach zones below.
+      setOnClickListener(Polyline.OnClickListener { _, _, _ -> false })
     }
     currentRoutePolyline = polyline
     // Insert above zones, below the user location overlay.
@@ -647,11 +971,47 @@ class OsmMapControllerHolder(
     mv.invalidate()
   }
 
+  /**
+   * Releases the map engine (called exactly once per MapView from
+   * AndroidView.onRelease). Order matters for rotation / tab-switch safety:
+   *   1. disableMyLocation() unregisters the GPS LocationListener from the
+   *      LocationManager FIRST — otherwise fix callbacks keep firing into the
+   *      destroyed map, and each recreation registers a duplicate listener.
+   *   2. Zone/event overlays are dropped and the MapView teardown runs
+   *      against a screen that is no longer drawing (setDestroyMode(false)
+   *      guarantees the framework does not also detach from
+   *      onDetachedFromWindow — exactly one detach, ever).
+   *   3. mapView + locationOverlay are nulled so every later call
+   *      (deploy*, enableLocationTracking, controls) becomes a safe no-op.
+   *   Idempotent: a second call (e.g. dispose after release) is a no-op.
+   */
   fun cleanup() {
+    val view = mapView ?: return
+    // ROTATION/CRASH FIX — strict, ordered teardown:
+    // 1. Cancel the pending one-shot locate.
+    cancelOneShot()
+    gpsRequestState = GpsRequestState.IDLE
+    gpsStatusMessage = null
+    // 2. Unregister the GPS listener BEFORE touching overlays so no fix can be
+    //    delivered into a half-torn-down map (a fix during teardown previously
+    //    re-entered the ViewModel pipeline mid-recreation).
+    locationOverlay?.disableMyLocation()
+    locationOverlay = null
+    // 3. Stop every pulsing overlay BEFORE removing it, so no queued
+    //    postInvalidate() can reach the detached MapView (each overlay used to
+    //    schedule a redraw every 66 ms forever).
+    (hazardZoneOverlays + safeZoneOverlays + disasterEventOverlays).forEach { it.stop() }
+    hazardZoneOverlays.forEach { view.overlays.remove(it) }
     hazardZoneOverlays.clear()
+    safeZoneOverlays.forEach { view.overlays.remove(it) }
     safeZoneOverlays.clear()
+    disasterEventOverlays.forEach { view.overlays.remove(it) }
     disasterEventOverlays.clear()
-    mapView?.onDetach()
+    currentRoutePolyline = null
+    // 4. Detach exactly once — destroy-mode is off, so the framework will not
+    //    also detach from onDetachedFromWindow.
+    view.onDetach()
+    mapView = null
   }
 
   companion object {
@@ -660,5 +1020,7 @@ class OsmMapControllerHolder(
     private const val DISASTER_PULSE_MS = 2200L
     private const val SAFE_ZONE_RADIUS_METERS = 900.0
     private const val DISASTER_MARKER_RADIUS_METERS = 1200.0
+    /** Hard timeout for the GPS one-shot locate before reporting TIMEOUT. */
+    private const val LOCATION_TIMEOUT_MS = 15_000L
   }
 }

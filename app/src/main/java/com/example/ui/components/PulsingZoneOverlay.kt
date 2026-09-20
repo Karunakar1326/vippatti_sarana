@@ -45,6 +45,27 @@ class PulsingZoneOverlay(
 
   private var startMillis = -1L
 
+  /** Coarse redraw throttle so many pulsing overlays never spam invalidations. */
+  private var lastInvalidateMillis = -1L
+
+  /**
+   * False once [stop] has been called.
+   *
+   * ROTATION/CRASH FIX: the pulse loop used to call `mapView.postInvalidate()`
+   * unconditionally every 66 ms forever. During Activity recreation the map tree
+   * is disposed while invalidate callbacks are still queued, so osmdroid ended up
+   * drawing against an already-detached tile provider. Every overlay is now
+   * stopped BEFORE the MapView is torn down (see
+   * OsmMapControllerHolder.cleanup), and a stopped overlay stops invalidating.
+   */
+  @Volatile
+  private var active = true
+
+  /** Permanently stops this overlay's animation + invalidations. Idempotent. */
+  fun stop() {
+    active = false
+  }
+
   /**
    * Base-circle pixel radius derived from two projected points (center and a
    * point radius meters due north) so the zone keeps its real-world size
@@ -66,6 +87,8 @@ class PulsingZoneOverlay(
 
   override fun draw(c: Canvas?, mapView: MapView?, shadow: Boolean) {
     if (c == null || mapView == null) return
+    // A stopped overlay still paints its static circle (so the released frame
+    // is not blank) but never schedules another redraw.
     val centerPx = mapView.projection.toPixels(center, null)
     val baseRadiusPx = baseRadiusPixels(mapView.projection)
 
@@ -75,7 +98,7 @@ class PulsingZoneOverlay(
     c.drawCircle(centerPx.x.toFloat(), centerPx.y.toFloat(), baseRadiusPx, strokePaint)
 
     // Expanding/fading pulse ring — subtle "active zone" animation.
-    if (pulsePeriodMs > 0) {
+    if (pulsePeriodMs > 0 && active) {
       val now = System.currentTimeMillis()
       if (startMillis < 0) startMillis = now
       val t = ((now - startMillis) % pulsePeriodMs).toFloat() / pulsePeriodMs
@@ -86,8 +109,13 @@ class PulsingZoneOverlay(
         pulsePaint.alpha = ((1f - wave) * 170).toInt().coerceIn(20, 170)
         c.drawCircle(centerPx.x.toFloat(), centerPx.y.toFloat(), pulseRadius, pulsePaint)
       }
-      // Continuous animation — keep invalidating while visible.
-      mapView.postInvalidate()
+      // Continuous animation — request redraws at ~15 fps (never every
+      // frame) so large multi-zone maps stay smooth on low-end devices.
+      val nowSync = System.currentTimeMillis()
+      if (active && nowSync - lastInvalidateMillis >= INVALIDATE_INTERVAL_MS) {
+        lastInvalidateMillis = nowSync
+        mapView.postInvalidate()
+      }
     }
   }
 
@@ -109,5 +137,6 @@ class PulsingZoneOverlay(
 
   companion object {
     private const val PULSE_EXPANSION = 0.35f
+    private const val INVALIDATE_INTERVAL_MS = 66L // ~15 fps
   }
 }

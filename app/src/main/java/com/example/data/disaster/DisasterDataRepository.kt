@@ -1,9 +1,10 @@
 package com.example.data.disaster
 
-import com.example.data.model.GeoMath
 import com.example.data.model.HazardZone
-import com.example.data.routing.GeoPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 
 /**
@@ -17,15 +18,7 @@ data class ProviderState(
   val isFromCache: Boolean,
   val isLive: Boolean,
   val statusMessage: String?
-) {
-  val freshnessLabel: String
-    get() = when {
-      fetchedAtMillis <= 0L -> "Unavailable"
-      isLive -> "Live"
-      isFromCache -> "Cached"
-      else -> "Recent"
-    }
-}
+)
 
 /** Full repository snapshot consumed by the ViewModel + map renderer. */
 data class DisasterFeed(
@@ -44,10 +37,10 @@ data class DisasterFeed(
  *   fetch -> validate -> dedupe (source event id) -> drop expired ->
  *   write cache -> emit; offline: serve the last valid cached shard.
  *
- * LIVE vs DEMO: the repository only ever holds REAL fetched events (plus
- * explicitly submitted user reports). Pilot/demo hazards are NEVER mixed in
- * here — they remain a separate, clearly labeled concept owned by the
- * ViewModel (Demo Mode).
+ * LIVE vs MOCK: the repository only ever holds REAL fetched events (plus
+ * explicitly submitted user reports). Mock-network hazards are NEVER mixed
+ * in here — they remain a separate, clearly labeled concept owned by the
+ * ViewModel (mock toggle).
  */
 class DisasterDataRepository(
   private val providers: List<DisasterDataProvider>,
@@ -55,13 +48,20 @@ class DisasterDataRepository(
   private val clock: () -> Long = System::currentTimeMillis
 ) {
 
-  /** Manual sync: query every provider, update cache, return the merged feed. */
+  /** Manual sync: query every provider in parallel, update cache, return the merged feed. */
   suspend fun refresh(): DisasterFeed {
     val now = clock()
+    // Fire all provider fetches concurrently — wait time = slowest provider,
+    // not the sum (USGS + NASA FIRMS + IMD each have their own client/timeouts).
+    val results = coroutineScope {
+      providers.map { provider -> async { provider.providerId to provider.fetchIndiaEvents() } }
+        .awaitAll()
+        .toMap()
+    }
     val states = mutableListOf<ProviderState>()
     val allEvents = mutableListOf<DisasterEvent>()
     for (provider in providers) {
-      when (val result = provider.fetchIndiaEvents()) {
+      when (val result = results[provider.providerId] ?: continue) {
         is ProviderResult.Success -> {
           val valid = result.events
             .filter { it.isValid(now) }
@@ -180,36 +180,4 @@ fun List<DisasterEvent>.dedupeBySourceEventId(): List<DisasterEvent> {
 /** Hazard zones for the risk/evaluator/routing engines (live events only). */
 fun toHazardZones(events: List<DisasterEvent>): List<HazardZone> =
   events.mapNotNull { DisasterEventNormalizer.toHazardZone(it) }
-
-/** Bounding-box query over in-memory events (map geographic filtering). */
-fun List<DisasterEvent>.inBounds(
-  minLat: Double, minLon: Double, maxLat: Double, maxLon: Double
-): List<DisasterEvent> = filter { event ->
-  when (val g = event.geometry) {
-    is EventGeometry.Point -> g.lat in minLat..maxLat && g.lon in minLon..maxLon
-    is EventGeometry.MultiPoint -> g.points.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.Line -> g.points.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.Polygon -> g.ring.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.RasterLayer -> false
-  }
-}
-
-/** Radius query over in-memory events (local analysis around the user). */
-fun List<DisasterEvent>.withinRadius(center: GeoPoint, radiusMeters: Double): List<DisasterEvent> =
-  filter { event ->
-    val point = when (val g = event.geometry) {
-      is EventGeometry.Point -> GeoPoint(g.lat, g.lon)
-      is EventGeometry.MultiPoint -> g.points.firstOrNull() ?: return@filter false
-      is EventGeometry.Line -> g.points.firstOrNull() ?: return@filter false
-      is EventGeometry.Polygon -> g.ring.firstOrNull() ?: return@filter false
-      is EventGeometry.RasterLayer -> return@filter false
-    }
-    GeoMath.distanceMeters(center, point) <= radiusMeters
-  }
 

@@ -1,6 +1,6 @@
 package com.example.data.shelters
 
-import com.example.data.hazards.HazardAnalysisService
+import com.example.data.risk.HazardAnalysisService
 import com.example.data.model.GeoMath
 import com.example.data.model.SafeZone
 import com.example.data.routing.GeoPoint

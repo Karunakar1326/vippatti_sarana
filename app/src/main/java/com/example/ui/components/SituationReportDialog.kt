@@ -131,7 +131,7 @@ fun SituationReportDialog(
           .padding(20.dp)
           .fillMaxWidth()
           .verticalScroll(rememberScrollState())
-          // Keep the NDRF submit button reachable while the keyboard is open.
+          // Keep the submit button reachable while the keyboard is open.
           .imePadding(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
       ) {
@@ -148,8 +148,8 @@ fun SituationReportDialog(
               color = TacticalOnSurface
             )
             Text(
-              text = "Voice | Form | Photo - relayed to NDRF 112 dispatcher",
-              fontSize = 11.sp,
+              text = "Voice | Form | Photo - saved as a local report",
+              fontSize = 12.sp,
               color = TacticalOnSurfaceVariant
             )
           }
@@ -273,7 +273,7 @@ fun SituationReportDialog(
                 Icon(Icons.Default.Close, contentDescription = "Remove photo", tint = TacticalOnSurface, modifier = Modifier.size(16.dp))
               }
             }
-            Text("Photo evidence attached to the NDRF report", fontSize = 10.sp, color = NeonEmerald)
+            Text("Photo reference saved locally with the report", fontSize = 12.sp, color = NeonEmerald)
           }
         }
 
@@ -314,7 +314,7 @@ fun SituationReportDialog(
           Icon(Icons.Default.Send, contentDescription = null, tint = OnNeonEmerald, modifier = Modifier.size(16.dp))
           Spacer(modifier = Modifier.width(6.dp))
           Text(
-            if (isSubmitting) "Relaying to NDRF dispatcher..." else "SEND REPORT TO NDRF 112",
+            if (isSubmitting) "Saving locally..." else "SAVE REPORT ON THIS DEVICE",
             fontWeight = FontWeight.Bold,
             color = OnNeonEmerald,
             fontSize = 12.sp

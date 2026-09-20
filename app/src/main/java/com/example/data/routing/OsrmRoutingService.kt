@@ -116,7 +116,13 @@ object HazardRoutingPolicy {
       }
       if (minApproach > hazard.radiusMeters * 4) continue // far away — ignore
 
-      if (enters || minApproach <= hazard.radiusMeters) {
+      // CAUTION band: outside the zone but still within the same "nearby"
+      // margin the detour builder uses. Without this the gate collapsed to
+      // `enters` alone (which already implies `minApproach <= radiusMeters`),
+      // so the CAUTION branch below — and the amber "Hazard Nearby" state the
+      // UI renders for it — was unreachable dead code.
+      val nearMiss = minApproach <= hazard.radiusMeters * CAUTION_BAND_FACTOR
+      if (enters || nearMiss) {
         val severityFactor = hazard.severity.weight.toDouble()
         penaltyMeters += BASE_PENALTY_METERS * severityFactor * (if (enters) 2.0 else 1.0)
         val status = if (enters) RouteSafetyStatus.DANGER else RouteSafetyStatus.CAUTION
@@ -155,6 +161,8 @@ object HazardRoutingPolicy {
 
   private const val BASE_PENALTY_METERS = 1_500.0
   private const val PENALTY_SCALE = 40.0
+  /** Near-miss band (× hazard radius) that raises CAUTION without entering the zone. */
+  private const val CAUTION_BAND_FACTOR = 1.5
 }
 
 /**
@@ -171,9 +179,125 @@ object OsrmRoutingService {
 
   private val httpClient: OkHttpClient by lazy {
     OkHttpClient.Builder()
-      .connectTimeout(5, TimeUnit.SECONDS)
-      .readTimeout(7, TimeUnit.SECONDS)
+      .connectTimeout(8, TimeUnit.SECONDS)
+      // Generous read window: cross-country road routes are large payloads
+      // that need server compute time. The map already shows the instant
+      // preview corridor, so waiting longer here only ever upgrades the
+      // user to real roads — it never leaves them staring at a spinner.
+      .readTimeout(30, TimeUnit.SECONDS)
       .build()
+  }
+
+  /**
+   * OSRM route URL for [endpoint], with coordinates in the OSRM-mandated
+   * longitude,latitude order (NOT latitude,longitude). Defaults to full road
+   * geometry (`overview=full&geometries=geojson`) so the returned shape
+   * follows every bend of the road network; [overview] can be lowered to
+   * "simplified" as a resilience fallback on very long trips.
+   */
+  fun buildRouteUrl(
+    endpoint: String,
+    origin: GeoPoint,
+    destination: GeoPoint,
+    wantAlternatives: Int,
+    overview: String = "full"
+  ): String = "$endpoint/" +
+    "${origin.lon},${origin.lat};${destination.lon},${destination.lat}" +
+    "?overview=$overview&geometries=geojson&steps=true&alternatives=$wantAlternatives"
+
+  /**
+   * Decodes an OSRM GeoJSON coordinates array (`[longitude, latitude]` per
+   * entry) into map points. EVERY returned point is kept in order — never
+   * collapsed to origin + destination.
+   */
+  fun decodeGeoJsonCoordinates(coordsArray: org.json.JSONArray): List<GeoPoint> =
+    buildList {
+      for (i in 0 until coordsArray.length()) {
+        val pt = coordsArray.optJSONArray(i) ?: continue
+        add(GeoPoint(pt.getDouble(1), pt.getDouble(0)))
+      }
+    }
+
+  /**
+   * Fetches up to [wantAlternatives] LIVE road routes from OSRM
+   * (`alternatives=N` returns genuinely different road corridors, not
+   * offsets of one line). Empty list when the network fails — callers fall
+   * back to the offline corridor. Each route is hazard-evaluated.
+   *
+   * Blocking network IO: call from Dispatchers.IO (or use the suspend
+   * [fetchLiveRoutesAsync] wrapper, which switches context itself).
+   */
+  fun fetchLiveRoutes(
+    origin: GeoPoint,
+    destination: GeoPoint,
+    mode: String,
+    hazards: List<HazardZone>,
+    destinationName: String,
+    wantAlternatives: Int
+  ): List<RouteResult> {
+    // Profile-matched endpoints: the router.project-osrm.org reference server hosts
+    // only the car profile — a /foot/ request there silently returns car
+    // geometry. The FOSSGIS community server runs dedicated foot + car
+    // instances, so each travel mode queries its own profile.
+    val endpoint = if (mode == "driving") "https://routing.openstreetmap.de/routed-car/route/v1/driving" else "https://routing.openstreetmap.de/routed-foot/route/v1/foot"
+
+    // First attempt: full road geometry (exact route lines, never a straight
+    // origin-destination collapse).
+    val fullUrl = buildRouteUrl(endpoint, origin, destination, wantAlternatives)
+    val fullRoutes = tryRequestRoutes(fullUrl, mode, hazards, destinationName, wantAlternatives)
+    if (fullRoutes != null && fullRoutes.isNotEmpty()) return fullRoutes
+
+    // Retry once with simplified geometry: very long trips can exceed the
+    // full-geometry payload limits on shared servers. A simplified polyline
+    // STILL follows the road network — far better than the offline straight
+    // corridor, and the only fallback for exact lines on long evacuations.
+    val retryUrl = buildRouteUrl(endpoint, origin, destination, wantAlternatives, overview = "simplified")
+    return tryRequestRoutes(retryUrl, mode, hazards, destinationName, wantAlternatives) ?: emptyList()
+  }
+
+  /** One OSRM request attempt; null when the attempt fully failed. */
+  private fun tryRequestRoutes(
+    url: String,
+    mode: String,
+    hazards: List<HazardZone>,
+    destinationName: String,
+    wantAlternatives: Int
+  ): List<RouteResult>? = try {
+    val request = Request.Builder()
+      .url(url)
+      .header("User-Agent", "VippattiSarana-DisasterRelief/1.0 (Android; OSM OSRM Routing)")
+      .build()
+    httpClient.newCall(request).execute().use { response ->
+      if (!response.isSuccessful) return null
+      val responseBody = response.body?.string()
+      if (responseBody.isNullOrBlank()) return null
+      val json = JSONObject(responseBody)
+      if (json.optString("code") != "Ok") return null
+      val routes = json.optJSONArray("routes") ?: return null
+      buildList {
+        for (i in 0 until routes.length().coerceAtMost(wantAlternatives)) {
+          parseOsrmRoute(routes.getJSONObject(i), mode, hazards, destinationName)?.let(::add)
+        }
+      }
+    }
+  } catch (e: Exception) {
+    Log.w(TAG, "OSRM routing attempt failed (${url.substringAfter("route/v1/").substringBefore("?")}): ${e.message}")
+    null
+  }
+
+  /**
+   * Suspend wrapper over [fetchLiveRoutes] for Main-thread callers (the
+   * instant-corridor-then-upgrade pattern): switches to IO itself.
+   */
+  suspend fun fetchLiveRoutesAsync(
+    origin: GeoPoint,
+    destination: GeoPoint,
+    mode: String,
+    hazards: List<HazardZone>,
+    destinationName: String,
+    wantAlternatives: Int
+  ): List<RouteResult> = withContext(Dispatchers.IO) {
+    fetchLiveRoutes(origin, destination, mode, hazards, destinationName, wantAlternatives)
   }
 
   /**
@@ -188,42 +312,9 @@ object OsrmRoutingService {
     hazards: List<HazardZone> = emptyList(),
     destinationName: String = "Safe Zone"
   ): RouteResult = withContext(Dispatchers.IO) {
-    // Profile-matched endpoints: the router.project-osrm.org demo server hosts
-    // only the car profile — a /foot/ request there silently returns car
-    // geometry. The FOSSGIS community server runs dedicated foot + car
-    // instances, so each travel mode queries its own profile.
-    val endpoint = if (mode == "driving") "https://routing.openstreetmap.de/routed-car/route/v1/driving" else "https://routing.openstreetmap.de/routed-foot/route/v1/foot"
-    val url = "$endpoint/" +
-      "${origin.lon},${origin.lat};${destination.lon},${destination.lat}" +
-      "?overview=full&geometries=geojson&steps=true" // routes[0] only — alternatives would 3x the payload
-
-    var liveResult: RouteResult? = null
-    try {
-      val request = Request.Builder()
-        .url(url)
-        .header("User-Agent", "VippattiSarana-DisasterRelief/1.0 (Android; OSM OSRM Routing)")
-        .build()
-
-      httpClient.newCall(request).execute().use { response ->
-        if (response.isSuccessful) {
-          val responseBody = response.body?.string()
-          if (!responseBody.isNullOrBlank()) {
-            val json = JSONObject(responseBody)
-            if (json.optString("code") == "Ok") {
-              val routes = json.getJSONArray("routes")
-              if (routes.length() > 0) {
-                val routeObj = routes.getJSONObject(0)
-                liveResult = parseOsrmRoute(routeObj, mode, hazards, destinationName)
-              }
-            }
-          }
-        }
-      }
-    } catch (e: Exception) {
-      Log.w(TAG, "OSRM routing unavailable; offline hazard-skirting corridor will be used: ${e.message}")
-    }
-
-    liveResult ?: calculateOfflineTacticalRoute(origin, destination, mode, hazards, destinationName)
+    fetchLiveRoutes(origin, destination, mode, hazards, destinationName, wantAlternatives = 1)
+      .firstOrNull()
+      ?: calculateOfflineTacticalRoute(origin, destination, mode, hazards, destinationName)
   }
 
   private fun parseOsrmRoute(
@@ -231,17 +322,13 @@ object OsrmRoutingService {
     mode: String,
     hazards: List<HazardZone>,
     destinationName: String
-  ): RouteResult {
+  ): RouteResult? {
     val distance = routeObj.optDouble("distance", 0.0)
     val duration = routeObj.optDouble("duration", 0.0)
 
-    val geometry = routeObj.getJSONObject("geometry")
-    val coordsArray = geometry.getJSONArray("coordinates")
-    val points = mutableListOf<GeoPoint>()
-    for (i in 0 until coordsArray.length()) {
-      val pt = coordsArray.getJSONArray(i)
-      points.add(GeoPoint(pt.getDouble(1), pt.getDouble(0)))
-    }
+    val geometry = routeObj.optJSONObject("geometry") ?: return null
+    val coordinates = geometry.optJSONArray("coordinates") ?: return null
+    val points = decodeGeoJsonCoordinates(coordinates)
 
     val stepsList = mutableListOf<RouteStep>()
     val legs = routeObj.optJSONArray("legs")
@@ -299,13 +386,37 @@ object OsrmRoutingService {
     val waypoints = mutableListOf(origin)
 
     // Intermediate tactical waypoints that skirt around nearby hazard areas.
+    // Each waypoint is a real great-circle offset from the corridor anchor on
+    // the side the hazard is NOT on, out at a clearance just beyond the hazard
+    // radius. The previous version used the bearing's numeric value as a raw
+    // lat/lon delta, which pushed the waypoint north for some bearings no
+    // matter where the hazard actually lay.
     for (hazard in hazards) {
       val approachStart = GeoMath.closestApproachMeters(hazard.center, origin, destination)
       if (approachStart <= hazard.radiusMeters * 1.5) {
-        val detourBearing = (GeoMath.bearingDegrees(origin, hazard.center) + 90.0) % 360.0
-        val midLat = (origin.lat + destination.lat) / 2 + detourBearing * 0.00003
-        val midLon = (origin.lon + destination.lon) / 2 + (detourBearing / 90.0) * 0.003
-        waypoints.add(GeoPoint(midLat, midLon))
+        val corridorBearing = GeoMath.bearingDegrees(origin, destination)
+        // Signed turn from the corridor heading to the hazard: negative means
+        // the hazard lies to the left, so the detour breaks right.
+        val hazardBearing = GeoMath.bearingDegrees(origin, hazard.center)
+        val hazardIsLeft = ((hazardBearing - corridorBearing + 540.0) % 360.0) - 180.0 < 0.0
+        val detourBearing = (corridorBearing + if (hazardIsLeft) 90.0 else -90.0) % 360.0
+
+        // Anchor on the corridor at the hazard's along-track position, then
+        // step sideways until the path clears the hazard edge with margin.
+        val legMeters = GeoMath.distanceMeters(origin, destination)
+        val anchor = if (legMeters > 0.0) {
+          val along = (legMeters * 0.5)
+            .coerceAtMost((approachStart + hazard.radiusMeters * 0.5).coerceAtLeast(0.0))
+            .coerceIn(0.0, legMeters)
+          GeoMath.offsetPoint(origin, corridorBearing, along)
+        } else {
+          origin
+        }
+        val clearanceMeters = maxOf(
+          hazard.radiusMeters * 1.25,
+          approachStart + hazard.radiusMeters * 0.25
+        )
+        waypoints.add(GeoMath.offsetPoint(anchor, detourBearing, clearanceMeters))
       }
     }
     waypoints.add(destination)
@@ -319,11 +430,27 @@ object OsrmRoutingService {
     val speedMps = if (mode == "driving") 8.33 else 1.35
     val durationSeconds = totalMeters / speedMps
 
-    val steps = listOf(
-      RouteStep("Exit hazard area toward the designated corridor", totalMeters * 0.35, durationSeconds * 0.35),
-      RouteStep("Follow the elevated bypass road (clear of hazard zones)", totalMeters * 0.35, durationSeconds * 0.35),
-      RouteStep("Arrive at $destinationName intake point", totalMeters * 0.30, durationSeconds * 0.30)
-    )
+    // Guidance is derived from the corridor actually built, not from invented
+    // road names: this fallback has no road data behind it, so it describes the
+    // manoeuvre and names the real hazards being avoided (names come from the
+    // live hazard list). A fabricated "elevated bypass road" would be rendered
+    // verbatim as turn-by-turn guidance in the nav HUD.
+    val avoided = hazards
+      .filter { GeoMath.closestApproachMeters(it.center, origin, destination) <= it.radiusMeters * 1.5 }
+      .sortedBy { GeoMath.closestApproachMeters(it.center, origin, destination) }
+    val steps = buildList {
+      add(RouteStep("Leave the hazard area by the clearest corridor", totalMeters * 0.35, durationSeconds * 0.35))
+      for (hazard in avoided) {
+        add(
+          RouteStep(
+            "Detour around the ${hazard.name} (${hazard.type.label}) — keep outside the marked zone",
+            totalMeters * 0.35 / avoided.size,
+            durationSeconds * 0.35 / avoided.size
+          )
+        )
+      }
+      add(RouteStep("Arrive at $destinationName", totalMeters * 0.30, durationSeconds * 0.30))
+    }
 
     val penalty = HazardRoutingPolicy.computePenaltyFor(waypoints, hazards)
     return RouteResult(
@@ -354,15 +481,25 @@ object OsrmRoutingService {
     destinationName: String = "Safe Zone",
     maxAlternatives: Int = 2
   ): List<RouteResult> = withContext(Dispatchers.IO) {
+    // Prefer REAL alternative road corridors from OSRM (exact road pathways,
+    // not straight lines). Offline, or when the server returns a single
+    // corridor, synthesize left/right skirting variants so the button always
+    // answers with comparable options.
+    val live = fetchLiveRoutes(origin, destination, mode, hazards, destinationName, wantAlternatives = 3)
     val alternatives = mutableListOf<RouteResult>()
-    // Primary corridor.
-    alternatives += calculateRoute(origin, destination, mode, hazards, destinationName)
-    // Additional offline detour variants (left/right skirting directions).
-    for (k in 1..maxAlternatives) {
-      val dir = if (k % 2 == 1) 1.0 else -1.0
-      alternatives += offlineDetourVariant(origin, destination, mode, hazards, destinationName, dir)
+    if (live.size >= 2) {
+      alternatives += live
+    } else {
+      // Primary corridor (live single, or offline fallback when unreachable).
+      alternatives += live.firstOrNull()
+        ?: calculateRoute(origin, destination, mode, hazards, destinationName)
+      // Additional offline detour variants (left/right skirting directions).
+      for (k in 1..maxAlternatives) {
+        val dir = if (k % 2 == 1) 1.0 else -1.0
+        alternatives += offlineDetourVariant(origin, destination, mode, hazards, destinationName, dir)
+      }
     }
-    alternatives.distinctBy { it.pathPoints.hashCode() }.sortedByDescending { it.routeSafetyScore }
+    alternatives.distinctBy { it.routeId }.sortedByDescending { it.routeSafetyScore }
   }
 
   private fun offlineDetourVariant(
@@ -398,10 +535,8 @@ object OsrmRoutingService {
   }
 
   /**
-   * Standard Haversine distance (kept as the public convenience metric).
+   * Standard Haversine distance.
    */
-  fun haversineDistanceMeters(p1: GeoPoint, p2: GeoPoint): Double = GeoMath.distanceMeters(p1, p2)
-
   fun formatDistance(meters: Double): String = GeoMath.formatKm(meters)
 
   fun formatDuration(seconds: Double): String {

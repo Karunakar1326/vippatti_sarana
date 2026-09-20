@@ -1,8 +1,8 @@
 package com.example.data.news
 
-import com.example.data.DispatchIconType
-import com.example.data.DispatchTagType
-import com.example.data.FeedDispatch
+import com.example.data.disaster.DispatchIconType
+import com.example.data.disaster.DispatchTagType
+import com.example.data.disaster.FeedDispatch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -59,6 +59,18 @@ object NewsPresentation {
     "Government Bulletins" -> category == NewsCategory.GOVERNMENT
     else -> true
   }
+
+  /** Every filter chip label — single source of truth for the dispatches UI. */
+  val CHIP_LABELS = listOf("All", "Severe Alerts", "Weather Radar", "Shelter Updates", "Government Bulletins")
+
+  /**
+   * Only the chips that currently have matching articles (All always present).
+   * A chip with nothing to show never appears as a dead button.
+   */
+  fun filterChipLabels(articles: List<NewsArticle>): List<String> =
+    listOf("All") + CHIP_LABELS.drop(1).filter { label ->
+      articles.any { matchesCategory(it.category, label) }
+    }
 
   /** Honest hero badge — a news article is never an official alert. */
   const val HERO_BADGE = "GNEWS • NOT AN OFFICIAL ALERT"

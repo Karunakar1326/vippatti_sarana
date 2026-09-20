@@ -1,6 +1,7 @@
 package com.example.data.model
 
 import com.example.data.routing.GeoPoint
+import kotlin.math.asin
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -27,24 +28,26 @@ object GeoMath {
   fun isWithinRadius(point: GeoPoint, center: GeoPoint, radiusMeters: Double): Boolean =
     distanceMeters(point, center) <= radiusMeters
 
-  /** Ray-casting point-in-polygon test (lat/lon ring). */
-  fun pointInPolygon(lat: Double, lon: Double, polygon: List<GeoPoint>): Boolean {
-    if (polygon.size < 3) return false
-    var inside = false
-    var j = polygon.size - 1
-    for (i in polygon.indices) {
-      val yi = polygon[i].lat
-      val xi = polygon[i].lon
-      val yj = polygon[j].lat
-      val xj = polygon[j].lon
-      if (((yi > lat) != (yj > lat)) &&
-        (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)
-      ) {
-        inside = !inside
-      }
-      j = i
-    }
-    return inside
+  /**
+   * Point [distanceMeters] away from [origin] along [bearingDeg] (true north,
+   * clockwise). Standard great-circle destination formula — the inverse of
+   * [distanceMeters]/[bearingDegrees], so callers can push a waypoint clear of
+   * a hazard in a *chosen* direction instead of nudging raw lat/lon by an
+   * angle's numeric value.
+   */
+  fun offsetPoint(origin: GeoPoint, bearingDeg: Double, distanceMeters: Double): GeoPoint {
+    val angular = distanceMeters / 6_371_000.0
+    val bearing = Math.toRadians(bearingDeg)
+    val lat1 = Math.toRadians(origin.lat)
+    val lon1 = Math.toRadians(origin.lon)
+    val lat2 = asin(sin(lat1) * cos(angular) + cos(lat1) * sin(angular) * cos(bearing))
+    val lon2 = lon1 + atan2(
+      sin(bearing) * sin(angular) * cos(lat1),
+      cos(angular) - sin(lat1) * sin(lat2)
+    )
+    // Normalise longitude into [-180, 180) so far-flung offsets stay valid.
+    val lonDeg = ((Math.toDegrees(lon2) + 540.0) % 360.0) - 180.0
+    return GeoPoint(Math.toDegrees(lat2), lonDeg)
   }
 
   /** Great-circle bearing in degrees [0..360) from [from] to [to]. */

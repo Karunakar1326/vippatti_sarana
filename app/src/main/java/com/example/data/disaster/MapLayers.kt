@@ -18,7 +18,6 @@ enum class DisasterLayer(
   OFFICIAL_ALERTS("Official Alerts", true, 3.5),
   EARTHQUAKES("Earthquakes", true, 3.5),
   ACTIVE_FIRES("Active Fires", false, 5.0),
-  FLOOD_LAYER("Flood Extent (Satellite)", false, 6.5),
   USER_REPORTS("User Reports", true, 8.0),
   SAFE_ZONES("Safe Zones", true, 8.0),
   EVACUATION_ROUTE("Evacuation Route", true, 0.0),
