@@ -1,4 +1,4 @@
-﻿<resources>
+<resources>
     <string name="app_name">Vippatti Sarana</string>
 
     <!-- =====================================================================
@@ -108,6 +108,43 @@
     <string name="action_call">Call</string>
     <string name="action_save">Save</string>
     <string name="action_cancel">Cancel</string>
+
+    <!-- INSTRUCTIONS TAB — disaster guide labels -->
+    <string name="instructions_manual_title">Survival Manual</string>
+    <string name="instructions_manual_subtitle">Be informed. Be prepared. Be safe.</string>
+    <string name="instructions_offline_title">Offline-first mode</string>
+    <string name="instructions_offline_subtitle">Keeps browsed map tiles; no bulk download in this build</string>
+    <string name="instructions_section_critical">Critical actions now</string>
+    <string name="instructions_section_critical_subtitle">What to do immediately</string>
+    <string name="instructions_critical_empty">No critical actions flagged for this phase — see categories below.</string>
+    <string name="instructions_section_categories">Instruction categories</string>
+    <string name="instructions_section_resources">Essential resources</string>
+    <string name="instructions_phase_before">Before</string>
+    <string name="instructions_phase_during">During</string>
+    <string name="instructions_phase_after">After</string>
+    <string name="instructions_detail_intro">Your safety comes first. Follow these instructions to reduce risk.</string>
+    <string name="instructions_step_format">Step %1$d of %2$d</string>
+    <string name="instructions_critical_badge">Critical</string>
+    <string name="instructions_group_immediate_safety">Immediate Safety</string>
+    <string name="instructions_group_immediate_safety_sub">Stay safe right now</string>
+    <string name="instructions_group_evacuation">Evacuation Guide</string>
+    <string name="instructions_group_evacuation_sub">Where to go and what to do</string>
+    <string name="instructions_group_utilities">Electricity and Utilities</string>
+    <string name="instructions_group_utilities_sub">Power, gas and water safety</string>
+    <string name="instructions_group_vulnerable">Vulnerable People</string>
+    <string name="instructions_group_vulnerable_sub">Children, elderly, disabled</string>
+    <string name="instructions_group_recovery">After the %1$s</string>
+    <string name="instructions_group_recovery_sub">Recovery and health precautions</string>
+    <string name="instructions_group_more">More Safety Steps</string>
+    <string name="instructions_group_more_sub">Additional guidance for this phase</string>
+    <string name="instructions_resources_contacts">Emergency Contacts</string>
+    <string name="instructions_resources_contacts_sub">Important helplines</string>
+    <string name="instructions_resources_evacuation">Emergency Kit</string>
+    <string name="instructions_resources_kit">Interactive Evacuation Kit</string>
+    <string name="instructions_resources_kit_sub">Check off items before you relocate</string>
+    <string name="instructions_back">Back to Instructions</string>
+    <string name="instructions_region_format">Regional: %1$s</string>
+    <string name="instructions_call_format">Dial %1$s</string>
 
     <!-- Localized contact roles, keyed by the stored (English) role value -->
     <string-array name="profile_contact_role_keys">
