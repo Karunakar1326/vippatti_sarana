@@ -119,7 +119,8 @@ fun EditProfileDialog(
               color = TacticalOnSurface
             )
             Text(
-              text = "Relayed with every SOS & NDRF report",
+              // STAGE 7 — local-only honesty: reports stay on this device.
+              text = "Saved with every SOS & situation report on this device",
               fontSize = 11.sp,
               color = TacticalOnSurfaceVariant
             )

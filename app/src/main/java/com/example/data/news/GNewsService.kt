@@ -19,8 +19,13 @@ sealed class GNewsCall {
 }
 
 /** Network boundary for the GNews v4 search endpoint. */
+/**
+ * [scope] is the cache ring the result belongs to; [query] is the search
+ * string built at runtime from the resolved place (see [NewsQueryFactory]), so
+ * no district or state name is compiled into this client.
+ */
 interface GNewsService {
-  suspend fun search(scope: NewsScope, apiKey: String): GNewsCall
+  suspend fun search(scope: NewsScope, query: String, apiKey: String): GNewsCall
 }
 
 /**
@@ -37,7 +42,7 @@ class GNewsServiceImpl(
   private val httpClient: OkHttpClient = defaultHttpClient()
 ) : GNewsService {
 
-  override suspend fun search(scope: NewsScope, apiKey: String): GNewsCall =
+  override suspend fun search(scope: NewsScope, query: String, apiKey: String): GNewsCall =
     withContext(Dispatchers.IO) {
       val key = apiKey.trim()
       if (key.isBlank() || key == GNEWS_PLACEHOLDER_KEY) {
@@ -45,10 +50,9 @@ class GNewsServiceImpl(
           NewsError(NewsErrorKind.NO_API_KEY, NO_KEY_MESSAGE)
         )
       }
-      val query = URLEncoder.encode(NewsQueryFactory.queryFor(scope), "UTF-8")
-        .replace("+", "%20")
+      val encodedQuery = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
       val url = "https://gnews.io/api/v4/search" +
-        "?q=$query" +
+        "?q=$encodedQuery" +
         "&lang=${NewsQueryFactory.LANGUAGE}" +
         "&country=${NewsQueryFactory.COUNTRY}" +
         "&max=${NewsQueryFactory.MAX_ARTICLES_PER_REQUEST}" +

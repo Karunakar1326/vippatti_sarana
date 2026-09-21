@@ -1,4 +1,4 @@
-package com.example.viewmodel
+﻿package com.example.viewmodel
 
 import com.example.data.disaster.DisasterDataProvider
 import com.example.data.disaster.DisasterDataRepository
@@ -13,30 +13,28 @@ import com.example.data.news.NewsErrorKind
 import com.example.data.news.NewsRepository
 import com.example.data.news.NewsScope
 import com.example.data.reports.LocalEmergencyReportService
+import com.example.data.weather.WeatherFailureKind
+import com.example.data.weather.WeatherReading
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
-import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.setMain
-import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
-import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 
 /**
- * BUG-1 REGRESSION — the Local SOS record flow must fully reset.
+ * BUG-1 REGRESSION â€” the Local SOS record flow must fully reset.
  *
  * Reproduction of the reported defect: complete the SOS flow
  * (confirm -> the record dialog appears -> tap "Keep The Local SOS Active").
  * The old `dismissSosDialog()` only closed the dialog and left
  * `isSosActive = true` and `userIsSafe = false` set forever, so MainActivity's
- * global ActiveToolsBar stayed injected above the screen content on every tab —
+ * global ActiveToolsBar stayed injected above the screen content on every tab â€”
  * the "Home screen becomes broken after the SOS flow" report.
  *
  * Every path out of the flow (keep/Done, cancel, back dismissal, confirm-dialog
@@ -45,19 +43,7 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class SosFlowStateTest {
 
-  private val testDispatcher = StandardTestDispatcher()
-
-  @Before
-  fun setUp() {
-    Dispatchers.setMain(testDispatcher)
-  }
-
-  @After
-  fun tearDown() {
-    // Drain ViewModel-init coroutines before resetMain (see DeviceToolsAndRoutingTest).
-    testDispatcher.scheduler.advanceUntilIdle()
-    Dispatchers.resetMain()
-  }
+  @get:Rule val mainDispatcherRule = MainDispatcherRule()
 
   private fun viewModel() = VippattiViewModel(
     reportService = LocalEmergencyReportService(),
@@ -65,14 +51,18 @@ class SosFlowStateTest {
     disasterCache = MemoryDisasterCache(),
     disasterRepository = DisasterDataRepository(
       providers = listOf(OfflineProvider(DisasterSource.USGS), OfflineProvider(DisasterSource.IMD_CAP)),
-      cache = MemoryDisasterCache()
+      cache = MemoryDisasterCache(),
+      cacheDispatcher = mainDispatcherRule.dispatcher
     ),
     newsRepositoryOverride = NewsRepository(
       service = OfflineNewsService(),
       cache = MemoryNewsCache(),
-      apiKeyProvider = { "" }
+      apiKeyProvider = { "" },
+      storageDispatcher = mainDispatcherRule.dispatcher
     ),
-    weatherFetcher = { null }
+    weatherFetcher = { WeatherReading.Failure(WeatherFailureKind.NO_CONNECTION) },
+    // These tests never route: keep the network boundary faked and deterministic.
+    liveRouteFetcher = { _, _, _, _, _, _ -> emptyList() }
   )
 
   private class OfflineProvider(override val providerId: DisasterSource) : DisasterDataProvider {
@@ -81,7 +71,7 @@ class SosFlowStateTest {
   }
 
   private class OfflineNewsService : GNewsService {
-    override suspend fun search(scope: NewsScope, apiKey: String): GNewsCall =
+    override suspend fun search(scope: NewsScope, query: String, apiKey: String): GNewsCall =
       GNewsCall.Failure(NewsError(NewsErrorKind.NETWORK, "offline (test fake)"))
   }
 
@@ -92,7 +82,7 @@ class SosFlowStateTest {
     assertTrue(vm.uiState.value.showSosConfirmDialog)
 
     vm.confirmSosBroadcast()
-    testDispatcher.scheduler.advanceUntilIdle()
+    mainDispatcherRule.dispatcher.scheduler.advanceUntilIdle()
 
     assertTrue(vm.uiState.value.showSosBroadcastDialog)
     assertTrue(vm.uiState.value.isSosActive)
@@ -103,7 +93,7 @@ class SosFlowStateTest {
     assertFalse("confirm dialog must be closed", state.showSosConfirmDialog)
     assertFalse("record dialog must be closed", state.showSosBroadcastDialog)
     assertFalse(
-      "SOS flag must reset — a stale flag keeps the global ActiveToolsBar on screen",
+      "SOS flag must reset â€” a stale flag keeps the global ActiveToolsBar on screen",
       state.isSosActive
     )
     assertTrue("safety switch must not stay armed", state.userIsSafe)
@@ -111,7 +101,7 @@ class SosFlowStateTest {
   }
 
   @Test
-  fun `completing the flow (keep button) fully resets the home screen state`() = runTest(testDispatcher) {
+  fun `completing the flow (keep button) fully resets the home screen state`() = runTest(mainDispatcherRule.dispatcher) {
     val vm = completeToRecordDialog()
 
     vm.dismissSosDialog() // "Keep The Local SOS Active" / back / outside tap
@@ -131,7 +121,7 @@ class SosFlowStateTest {
   }
 
   @Test
-  fun `cancelling the flow fully resets the home screen state`() = runTest(testDispatcher) {
+  fun `cancelling the flow fully resets the home screen state`() = runTest(mainDispatcherRule.dispatcher) {
     val vm = completeToRecordDialog()
 
     vm.cancelSosBroadcast()
@@ -145,7 +135,7 @@ class SosFlowStateTest {
   }
 
   @Test
-  fun `dismissing the confirm gate arms nothing`() = runTest(testDispatcher) {
+  fun `dismissing the confirm gate arms nothing`() = runTest(mainDispatcherRule.dispatcher) {
     val vm = viewModel()
     vm.triggerSosBroadcast()
     vm.dismissSosConfirmDialog()
@@ -156,7 +146,7 @@ class SosFlowStateTest {
   }
 
   @Test
-  fun `the active-tools overlay disappears once the flow completes`() = runTest(testDispatcher) {
+  fun `the active-tools overlay disappears once the flow completes`() = runTest(mainDispatcherRule.dispatcher) {
     val vm = completeToRecordDialog()
     assertTrue("overlay must be visible while the record is armed", vm.uiState.value.isSosActive)
 
@@ -164,15 +154,15 @@ class SosFlowStateTest {
     advanceUntilIdle()
 
     assertTrue(
-      "overlay must be gone after completion — this is what broke the home screen",
+      "overlay must be gone after completion â€” this is what broke the home screen",
       vm.uiState.value.hasActiveDeviceTool.not() && vm.uiState.value.isSosActive.not()
     )
   }
 
   @Test
-  fun `the SOS dialog can never leave an armed state after dismissal`() = runTest(testDispatcher) {
+  fun `the SOS dialog can never leave an armed state after dismissal`() = runTest(mainDispatcherRule.dispatcher) {
     val vm = completeToRecordDialog()
-    // Simulate a rapid double-completion (Keep then system back) — the state must
+    // Simulate a rapid double-completion (Keep then system back) â€” the state must
     // stay reset, never re-arm.
     vm.dismissSosDialog()
     vm.dismissSosDialog()

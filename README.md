@@ -4,7 +4,7 @@
 
 Vippatti Sarana is an Android-based disaster management application designed to help users assess disaster risks, identify safer areas, access evacuation routes, and receive relevant disaster information.
 
-The project is currently focused on **Idukki, Kerala**, with support for **India-wide disaster data sources**.
+Vippatti Sarana is an **all-India** disaster-management and relocation decision-support application: live data sources are queried across India, and the user's own location drives every assessment. **Idukki, Kerala** appears only as a configurable pilot/demo region (sample shelter network and demonstration records), not as a limitation of scope.
 
 ---
 
@@ -33,8 +33,8 @@ The project is currently focused on **Idukki, Kerala**, with support for **India
 | Architecture     | MVVM                                 |
 | Maps             | OSMDroid + OpenStreetMap             |
 | Routing          | OSRM                                 |
-| Networking       | OkHttp / Retrofit                    |
-| Local Storage    | Room / File Cache                    |
+| Networking       | OkHttp                               |
+| Local Storage    | File Cache                           |
 | Backend Services | Firebase                             |
 | News             | GNews API                            |
 | Disaster Data    | USGS, NASA FIRMS, IMD CAP            |
@@ -155,6 +155,7 @@ Vippatti Sarana is designed to distinguish between real data and fallback/demo d
 - Fallback location data is explicitly labelled.
 - Disaster events retain their respective data sources.
 - News is clearly marked as **not an official emergency alert**.
+- Historical EM-DAT context is attributed, versioned, and kept separate from live decisions — see [EMDAT_ATTRIBUTION.md](./EMDAT_ATTRIBUTION.md).
 - The application avoids fabricating alerts, routes, or verification statuses.
 
 ---

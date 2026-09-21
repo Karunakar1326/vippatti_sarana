@@ -23,6 +23,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsWalk
 import androidx.compose.material.icons.filled.AltRoute
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -32,6 +34,10 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -78,6 +84,14 @@ internal fun RouteIntelligencePanel(
   val route = uiState.activeRoute
   val evaluation = uiState.selectedEvaluation
 
+  // BUG-2 FIX: the card used to render EVERY block (lifecycle message, retry
+  // row, metrics, controls) unconditionally, so a DANGER route with a blocking
+  // hazard warning grew ~616px tall and broke the sheet/screen layout. Secondary
+  // detail now sits behind an explicit "Route details" action, which is what the
+  // design brief asks for. The essential decision information — destination,
+  // validation status, route safety, hazard warning, distance/ETA — stays visible.
+  var showDetails by rememberSaveable { mutableStateOf(false) }
+
   Column(
     modifier = Modifier
       .fillMaxWidth()
@@ -93,7 +107,8 @@ internal fun RouteIntelligencePanel(
       .testTag("route_intelligence_panel"),
     verticalArrangement = Arrangement.spacedBy(6.dp)
   ) {
-    // Header: destination + OSRM validation status (honest).
+    // Primary header row with the explicit "Route details" action in the same
+    // line as the validation badge — controls the secondary blocks below.
     Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.SpaceBetween,
@@ -167,10 +182,10 @@ internal fun RouteIntelligencePanel(
     // route" can never be mistaken for a computed safe corridor. Shown only when
     // it adds information beyond the badge (in-flight / failure / fallback), and
     // clamped so it can never inflate the card.
-    if (uiState.routeStatus == RouteStatus.REQUESTING ||
-      uiState.routeStatus == RouteStatus.NETWORK_ERROR ||
-      uiState.routeStatus == RouteStatus.NO_ROUTE ||
-      uiState.routeStatus == RouteStatus.FALLBACK_UNVERIFIED
+    if (showDetails && (uiState.routeStatus == RouteStatus.REQUESTING ||
+        uiState.routeStatus == RouteStatus.NETWORK_ERROR ||
+        uiState.routeStatus == RouteStatus.NO_ROUTE ||
+        uiState.routeStatus == RouteStatus.FALLBACK_UNVERIFIED)
     ) {
       uiState.routeStatusMessage?.let { message ->
         Text(
@@ -191,9 +206,10 @@ internal fun RouteIntelligencePanel(
 
     // Failure states offer a real Retry, and the offline estimate is available
     // ONLY as an explicit, clearly-labelled opt-in.
-    if (uiState.routeStatus == RouteStatus.NETWORK_ERROR ||
-      uiState.routeStatus == RouteStatus.NO_ROUTE ||
-      uiState.routeStatus == RouteStatus.FALLBACK_UNVERIFIED
+    if (showDetails &&
+      (uiState.routeStatus == RouteStatus.NETWORK_ERROR ||
+        uiState.routeStatus == RouteStatus.NO_ROUTE ||
+        uiState.routeStatus == RouteStatus.FALLBACK_UNVERIFIED)
     ) {
       Row(
         modifier = Modifier.fillMaxWidth(),
@@ -286,6 +302,19 @@ internal fun RouteIntelligencePanel(
         trackColor = ObsidianContainerHigh
       )
 
+      // STAGE 5 — closure/traffic honesty: a READY road route is OSRM geometry
+      // checked against known hazard geometry only. There is no road-closure
+      // feed and no live-traffic feed, so the limitation is stated on the card
+      // itself (the fallback estimate already carries its own disclaimer).
+      if (route.isLiveOsrm && uiState.routeStatus == RouteStatus.READY) {
+        Text(
+          text = "Road closures and live traffic are not verified.",
+          fontSize = 10.sp,
+          color = TacticalOnSurfaceVariant,
+          modifier = Modifier.testTag("route_closure_disclaimer")
+        )
+      }
+
       // Hazard warnings — surfaced when the route meets a hazard zone.
       route.hazardWarnings.forEach { warning ->
         Row(
@@ -323,8 +352,32 @@ internal fun RouteIntelligencePanel(
       }
     }
 
+    // Explicit action to inspect the secondary routing detail.
+    TextButton(
+      onClick = { showDetails = !showDetails },
+      contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+      modifier = Modifier
+        .heightIn(min = 30.dp)
+        .testTag("route_details_toggle")
+    ) {
+      Icon(
+        imageVector = if (showDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+        contentDescription = null,
+        tint = TacticalOnSurfaceVariant,
+        modifier = Modifier.size(16.dp)
+      )
+      Spacer(modifier = Modifier.width(4.dp))
+      Text(
+        text = if (showDetails) "Hide route details" else "Route details",
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        color = TacticalOnSurfaceVariant
+      )
+    }
+
     // Controls: travel mode toggle + alternatives + best-zone.
-    Row(
+    if (showDetails) {
+      Row(
       modifier = Modifier.fillMaxWidth(),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
       verticalAlignment = Alignment.CenterVertically
@@ -383,7 +436,7 @@ internal fun RouteIntelligencePanel(
       ) {
         Icon(Icons.Default.AltRoute, contentDescription = null, modifier = Modifier.size(14.dp))
         Spacer(modifier = Modifier.width(4.dp))
-        Text("Alternatives (${uiState.alternativeRoutes.size})", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Text("Alternatives (${uiState.alternativeRoutes.size})", fontSize = 12.sp, fontWeight = FontWeight.Bold)
       }
 
       Spacer(modifier = Modifier.weight(1f))
@@ -400,12 +453,13 @@ internal fun RouteIntelligencePanel(
       ) {
         Icon(Icons.Default.NearMe, contentDescription = null, modifier = Modifier.size(14.dp))
         Spacer(modifier = Modifier.width(4.dp))
-        Text("Best Zone", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Text("Best Zone", fontSize = 12.sp, fontWeight = FontWeight.Bold)
       }
     }
+    } // end of showDetails (controls + alternatives)
 
     // Alternative corridor chips (when computed).
-    if (uiState.alternativeRoutes.size > 1) {
+    if (showDetails && uiState.alternativeRoutes.size > 1) {
       LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         items(uiState.alternativeRoutes.size) { idx ->
           val alt = uiState.alternativeRoutes[idx]

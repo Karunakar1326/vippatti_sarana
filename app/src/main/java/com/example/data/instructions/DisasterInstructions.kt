@@ -192,7 +192,8 @@ object DisasterInstructions {
           ),
           InstructionItem(
             "Keep drainage clear",
-            "Unblock household and hill drains — clogged water is the main landslide trigger in Kerala's highlands."
+            "Unblock household and hill drains — clogged water is the main landslide trigger in Kerala's highlands.",
+            region = "Kerala highlands"
           ),
           InstructionItem(
             "Avoid building at slope base",
@@ -460,9 +461,22 @@ object DisasterInstructions {
         InstructionItem("112 — National Emergency Number", "Police, Fire, Health — one number for all emergencies.", isCritical = true),
         InstructionItem("101 — Fire & Rescue", "Report fires, rescues and gas leaks."),
         InstructionItem("100 — Police", "Law enforcement and rescue coordination."),
-        InstructionItem("108 — Ambulance (Kerala)", "Free emergency ambulance service in Kerala."),
-        InstructionItem("1077 — District Relief Control Room", "Flood, landslide and relief coordination at the district level."),
-        InstructionItem("KSDMA — Kerala State Disaster Management Authority", "State-level disaster warnings and advisories.")
+        // Region-scoped lines are labelled so users outside that state can tell
+        // them apart from the national numbers above.
+        InstructionItem(
+          "108 — Ambulance (Kerala)",
+          "Free emergency ambulance service in Kerala.",
+          region = "Kerala"
+        ),
+        InstructionItem(
+          "1077 — District Relief Control Room",
+          "Flood, landslide and relief coordination at the district level."
+        ),
+        InstructionItem(
+          "KSDMA — Kerala State Disaster Management Authority",
+          "State-level disaster warnings and advisories.",
+          region = "Kerala"
+        )
       )
     ),
     CommonModule(

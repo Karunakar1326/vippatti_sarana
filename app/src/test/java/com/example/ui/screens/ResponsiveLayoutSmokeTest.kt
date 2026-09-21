@@ -62,7 +62,11 @@ class ResponsiveLayoutSmokeTest {
           onToggleAudio = {},
           onSelectCategory = { _ -> },
           onNavigateToEvacRoute = {},
-          onNavigateTab = { _ -> }
+          onNavigateTab = { _ -> },
+          onToggleHistoricalLayer = {},
+          onHistoricalFiltersChange = { _ -> },
+          onClearHistoricalFilters = {},
+          onSelectHistoricalEvent = { _ -> }
         )
       }
     }

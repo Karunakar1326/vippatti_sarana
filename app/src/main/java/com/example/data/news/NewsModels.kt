@@ -17,14 +17,31 @@ const val NO_KEY_MESSAGE =
   "News key not configured — add GNEWS_API_KEY to app/.env and rebuild. " +
     "Cached news (if any) is shown."
 
-/** Geographic relevance ring of the disaster news feed. */
-enum class NewsScope(val label: String) {
-  /** District level — Idukki, Kerala (the pilot region). */
-  MY_AREA("Idukki District"),
-  /** State level — Kerala. */
-  MY_STATE("Kerala"),
-  /** National level — India. */
-  INDIA("India")
+/**
+ * Geographic relevance ring of the disaster news feed. The rings carry NO
+ * place names: the label is produced at runtime from the resolved place, so
+ * the app can serve any district or state in India.
+ */
+enum class NewsScope {
+  /** District level - the user's own district, resolved from their location. */
+  MY_AREA,
+  /** State level - the user's own state, resolved from their location. */
+  MY_STATE,
+  /** National level - India. */
+  INDIA
+}
+
+/**
+ * Honest ring label. Without a resolved place the app never names a place it
+ * was not told: it says the ring could not be resolved and the feed is
+ * therefore national only.
+ */
+fun NewsScope.ringLabel(place: com.example.data.location.ResolvedPlace?): String = when (this) {
+  NewsScope.MY_AREA -> place?.district?.takeIf { it.isNotBlank() }
+    ?: "District scope (not resolved)"
+  NewsScope.MY_STATE -> place?.state?.takeIf { it.isNotBlank() }
+    ?: "State scope (not resolved)"
+  NewsScope.INDIA -> "India"
 }
 
 /**
@@ -58,8 +75,12 @@ data class NewsArticle(
   val scope: NewsScope,
   val category: NewsCategory
 ) {
-  /** Honest source line, e.g. "Malayala Manorama • Idukki District". */
-  val sourceLine: String get() = "$sourceName • ${scope.label}"
+  /**
+   * Honest source line, e.g. "Malayala Manorama • Wayanad" - the ring label
+   * comes from the place resolved at display time, never from a constant.
+   */
+  fun sourceLine(place: com.example.data.location.ResolvedPlace?): String =
+    "$sourceName • ${scope.ringLabel(place)}"
 }
 
 /** Failure kinds surfaced honestly to the UI. */

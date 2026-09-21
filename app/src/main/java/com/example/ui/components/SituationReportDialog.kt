@@ -277,7 +277,7 @@ fun SituationReportDialog(
           }
         }
 
-        // --- Relay preview ----------------------------------------------------
+        // --- Local record preview (nothing leaves this device) ------------------
         Column(
           modifier = Modifier
             .fillMaxWidth()

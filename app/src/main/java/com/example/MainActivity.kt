@@ -61,6 +61,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.disaster.DisasterFileCache
 import com.example.data.disaster.ZoneDetailMapper
+import com.example.data.location.AndroidGeocoderPlaceResolver
 import com.example.data.news.NewsFileCache
 import com.example.ui.components.AddContactDialog
 import com.example.ui.components.DisasterEventDetailDialog
@@ -124,6 +125,23 @@ class MainActivity : ComponentActivity() {
       )
       val authRepository = authGate.repository
       var signedIn by remember { mutableStateOf(authGate.isSignedIn()) }
+      // First-run onboarding: shown once, before the auth gate, and never
+      // again once completed. Signed-in sessions skip it entirely. The flag
+      // is written only on skip / sign-in / final-page completion, never for
+      // page changes (see OnboardingCompletion).
+      val onboardingStore = remember {
+        com.example.ui.screens.OnboardingCompletion(
+          appContext.getSharedPreferences(
+            com.example.ui.screens.OnboardingCompletion.PREFS_NAME,
+            MODE_PRIVATE
+          )
+        )
+      }
+      var onboardingDone by remember { mutableStateOf(onboardingStore.isCompleted()) }
+      val completeOnboarding = {
+        onboardingStore.setCompleted()
+        onboardingDone = true
+      }
 
       // Production ViewModel: file-backed GNews cache AND file-backed disaster
       // provider shards survive app restarts; the osmdroid tile-cache dir feeds
@@ -135,13 +153,38 @@ class MainActivity : ComponentActivity() {
             VippattiViewModel(
               newsCache = NewsFileCache(File(cacheDir, "news_cache")),
               disasterCache = DisasterFileCache(File(cacheDir, "disaster_cache")),
-              tileCacheDirProvider = { File(cacheDir, "osmdroid/tiles") }
+              tileCacheDirProvider = { File(cacheDir, "osmdroid/tiles") },
+              // Dynamic-data rule: district/state names for news scoping are
+              // resolved from the device's own coordinates at runtime.
+              placeResolver = AndroidGeocoderPlaceResolver(applicationContext),
+              // HISTORICAL DISASTER INTELLIGENCE (EM-DAT). The prepared archive
+              // ships as an app asset - no network call, and never reported as
+              // a live feed. A missing asset yields an honest UNAVAILABLE state.
+              historicalProvider = com.example.data.historical.BundledHistoricalDataProvider(
+                reader = { assetName ->
+                  try {
+                    applicationContext.assets.open(assetName)
+                      .bufferedReader()
+                      .use { it.readText() }
+                  } catch (_: Exception) {
+                    null
+                  }
+                }
+              )
             ) as T
         }
       )
       val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
       VippattiTheme(darkTheme = uiState.isDarkTheme) {
+        // HISTORICAL (EM-DAT) record sheet. Opened only from the historical
+        // panel or a historical map marker, never from a live hazard marker.
+        uiState.historicalDetailEvent?.let { historical ->
+          com.example.ui.screens.HistoricalEventDetailDialog(
+            event = historical,
+            onDismiss = { viewModel.closeHistoricalEventDetail() }
+          )
+        }
         if (signedIn) {
           VippattiAppRoot(
             viewModel = viewModel,
@@ -150,6 +193,10 @@ class MainActivity : ComponentActivity() {
               authRepository.logout()
               signedIn = false
             }
+          )
+        } else if (!onboardingDone) {
+          com.example.ui.screens.OnboardingFlowScreen(
+            onFinish = { completeOnboarding() }
           )
         } else {
           LoginScreen(
@@ -427,7 +474,11 @@ fun VippattiAppRoot(
             onToggleAudio = { viewModel.toggleAudioBulletin() },
             onSelectCategory = { viewModel.setNewsCategory(it) },
             onNavigateToEvacRoute = { viewModel.startEvacuationRoute() },
-            onNavigateTab = { viewModel.setTab(it) }
+            onNavigateTab = { viewModel.setTab(it) },
+            onToggleHistoricalLayer = { viewModel.toggleHistoricalLayer() },
+            onHistoricalFiltersChange = { viewModel.setHistoricalFilters(it) },
+            onClearHistoricalFilters = { viewModel.clearHistoricalFilters() },
+            onSelectHistoricalEvent = { viewModel.openHistoricalEventDetail(it) }
           )
 
           ScreenTab.          RADAR_MAP -> RadarMapScreen(
@@ -449,8 +500,11 @@ fun VippattiAppRoot(
             onToggleLayer = { viewModel.toggleLayer(it) },
             onOpenIncidentReport = { viewModel.openIncidentReportDialog() },
             onOpenDisasterEventDetail = { viewModel.openDisasterEventDetail(it) },
+            onOpenHistoricalEventDetail = { viewModel.openHistoricalEventDetail(it) },
             onToggleMockData = { viewModel.toggleMockData() },
-            onRequestFallbackRoute = { viewModel.requestOfflineFallbackRoute() }
+            onRequestFallbackRoute = { viewModel.requestOfflineFallbackRoute() },
+            // PHASE 3: retry the live Open-Meteo reading without touching the rest.
+            onRetryWeather = { viewModel.refreshWeather(force = true) }
           )
 
           ScreenTab.INSTRUCTIONS -> InstructionsScreen(
@@ -576,7 +630,9 @@ fun VippattiAppRoot(
           zone = shelter,
           evaluation = uiState.selectedEvaluation?.takeIf { it.zone.id == shelter.id },
           onDismiss = { viewModel.closeSafeZoneDetail() },
-          onSelectAndRoute = { viewModel.selectSafeZone(shelter) }
+          onSelectAndRoute = { viewModel.selectSafeZone(shelter) },
+          // Carrying-capacity verdict for THIS site (null when not assessed).
+          capacityAssessment = uiState.capacityAssessments[shelter.id]
         )
       }
       if (uiState.showAddContactDialog) {

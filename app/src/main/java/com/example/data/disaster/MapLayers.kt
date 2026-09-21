@@ -35,27 +35,82 @@ enum class DisasterLayer(
 object MarkerGeneralizer {
 
   /**
-   * Grid-cluster [events] at [zoomLevel]: events within one grid cell merge
-   * into a single aggregate marker (the most severe event represents the
-   * cell). At high zooms (>= [DETAIL_ZOOM]) nothing is clustered.
+   * One aggregate marker: the event that REPRESENTS the grid cell plus what the
+   * cell contains. [maxFrpMegawatts] is the strongest real measurement among
+   * the merged detections (null when none of them carried one).
    */
-  fun generalize(events: List<DisasterEvent>, zoomLevel: Double): List<DisasterEvent> {
-    if (zoomLevel >= DETAIL_ZOOM || events.size < 2) return events
+  data class DetectionCluster(
+    val representative: DisasterEvent,
+    val memberCount: Int,
+    val maxFrpMegawatts: Double?
+  )
+
+  /**
+   * Grid-cluster [events] at [zoomLevel]: events inside one grid cell merge
+   * into a single aggregate marker. The representative is chosen by INTENSITY:
+   * fire detections rank by their provider-measured FRP, everything else by
+   * hazard severity (FRP breaks ties across types). At high zooms
+   * (>= [DETAIL_ZOOM]) nothing is clustered.
+   */
+  fun clusters(events: List<DisasterEvent>, zoomLevel: Double): List<DetectionCluster> {
+    if (zoomLevel >= DETAIL_ZOOM || events.size < 2) {
+      return events.map { DetectionCluster(it, memberCount = 1, maxFrpMegawatts = FireIntensityScale.frpOf(it)) }
+    }
     val cellSize = cellDegrees(zoomLevel)
+    val counts = LinkedHashMap<String, Int>()
     val grid = LinkedHashMap<String, DisasterEvent>()
+    val cellsWithOtherGeometry = mutableListOf<DetectionCluster>()
     for (event in events) {
       val point = when (val g = event.geometry) {
         is EventGeometry.Point -> g
-        else -> continue // polygons/lines are rendered directly, not clustered
+        else -> {
+          // Polygons/lines are rendered directly, not clustered.
+          cellsWithOtherGeometry += DetectionCluster(
+            representative = event,
+            memberCount = 1,
+            maxFrpMegawatts = FireIntensityScale.frpOf(event)
+          )
+          continue
+        }
       }
       val key = "${Math.floor(point.lat / cellSize)}:${Math.floor(point.lon / cellSize)}"
+      counts[key] = (counts[key] ?: 0) + 1
       val existing = grid[key]
-      if (existing == null || event.severity.weight > existing.severity.weight) {
+      if (existing == null || intensityRank(event) > intensityRank(existing)) {
         grid[key] = event
       }
     }
-    return grid.values.toList()
+    val clustered = grid.map { (key, representative) ->
+      DetectionCluster(
+        representative = representative,
+        memberCount = counts[key] ?: 1,
+        maxFrpMegawatts = maxFrpInCell(events, key, cellSize)
+      )
+    }
+    return cellsWithOtherGeometry + clustered
   }
+
+  /**
+   * Ordering used to pick the cell representative, from real fields only:
+   * hazard severity first (so a severe quake is never hidden behind a weak
+   * fire), then the provider's own FRP measurement inside the same severity
+   * band, then the most recent observation. Nothing is chosen arbitrarily.
+   */
+  private fun intensityRank(event: DisasterEvent): Double {
+    val frpNormalized = (FireIntensityScale.frpOf(event) ?: 0.0)
+      .div(FireIntensityScale.EXTREME_MW)
+      .coerceIn(0.0, 1.0)
+    return event.severity.weight * 1_000.0 +
+      frpNormalized * 100.0 +
+      event.observedAtMillis / 1.0e15
+  }
+
+  private fun maxFrpInCell(events: List<DisasterEvent>, key: String, cellSize: Double): Double? =
+    events.mapNotNull { event ->
+      val point = event.geometry as? EventGeometry.Point ?: return@mapNotNull null
+      val cell = "${Math.floor(point.lat / cellSize)}:${Math.floor(point.lon / cellSize)}"
+      if (cell != key) null else FireIntensityScale.frpOf(event)
+    }.maxOrNull()
 
   fun cellDegrees(zoomLevel: Double): Double = when {
     zoomLevel < 4.0 -> 2.0
