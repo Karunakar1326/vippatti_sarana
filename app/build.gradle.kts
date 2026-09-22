@@ -161,13 +161,8 @@ implementation(libs.androidx.lifecycle.viewmodel.compose)
 
 // implementation(libs.androidx.navigation.compose)
 
-implementation(libs.androidx.room.ktx)
-implementation(libs.androidx.room.runtime)
 implementation(libs.coil.compose)
-implementation(libs.converter.moshi)
-implementation(libs.firebase.ai)
 implementation(libs.firebase.config)
-implementation(libs.firebase.storage)
 
 // Uncomment to use Firestore:
 // implementation(libs.firebase.firestore)
@@ -179,22 +174,14 @@ implementation(libs.firebase.storage)
 // implementation(libs.androidx.credentials.play.services)
 // implementation(libs.googleid)
 
-implementation(libs.firebase.appcheck.recaptcha)
-implementation(libs.firebase.appcheck.debug)
 implementation(libs.kotlinx.coroutines.android)
 implementation(libs.kotlinx.coroutines.core)
-implementation(libs.logging.interceptor)
-implementation(libs.moshi.kotlin)
 implementation(libs.okhttp)
 
 // implementation(libs.play.services.location)
 
-implementation(libs.retrofit)
 implementation("org.osmdroid:osmdroid-android:6.1.20")
 implementation("androidx.preference:preference-ktx:1.2.1")
-implementation("androidx.appcompat:appcompat:1.7.0")
-implementation("androidx.cardview:cardview:1.0.0")
-implementation("com.google.android.material:material:1.12.0")
 
 testImplementation(libs.androidx.compose.ui.test.junit4)
 testImplementation(libs.androidx.core)
@@ -212,15 +199,11 @@ testImplementation(libs.roborazzi.junit.rule)
 
 androidTestImplementation(platform(libs.androidx.compose.bom))
 androidTestImplementation(libs.androidx.compose.ui.test.junit4)
-androidTestImplementation(libs.androidx.espresso.core)
 androidTestImplementation(libs.androidx.junit)
 androidTestImplementation(libs.androidx.runner)
 
 debugImplementation(libs.androidx.compose.ui.test.manifest)
 debugImplementation(libs.androidx.compose.ui.tooling)
-
-"ksp"(libs.androidx.room.compiler)
-"ksp"(libs.moshi.kotlin.codegen)
 
 
 }

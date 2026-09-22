@@ -17,3 +17,4 @@ local.properties
 .env
 debug.keystore
 .freebuff/
+_filelist.txt

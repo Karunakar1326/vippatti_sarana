@@ -1,24 +1,33 @@
 package com.example
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.os.BatteryManager
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.net.Uri
+import android.widget.Toast
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,8 +37,11 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.Alignment
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -37,14 +49,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.disaster.DisasterFileCache
 import com.example.data.disaster.ZoneDetailMapper
+import com.example.data.location.AndroidGeocoderPlaceResolver
 import com.example.data.news.NewsFileCache
 import com.example.ui.components.AddContactDialog
 import com.example.ui.components.DisasterEventDetailDialog
@@ -57,13 +74,21 @@ import com.example.ui.components.SafeZoneDetailDialog
 import com.example.ui.components.SosBroadcastDialog
 import com.example.ui.components.SosConfirmDialog
 import com.example.ui.components.VippattiBottomNavBar
+import com.example.data.auth.AuthRepository
+import com.example.data.auth.SharedPrefsAuthStorage
 import com.example.ui.screens.DispatchesScreen
 import com.example.ui.screens.InstructionsScreen
+import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.RadarMapScreen
+import com.example.ui.theme.EmergencyRed
 import com.example.ui.theme.ObsidianSurface
+import com.example.ui.theme.TacticalOnSurface
 import com.example.ui.theme.VippattiTheme
 import com.example.viewmodel.ScreenTab
+import com.example.viewmodel.AuthGateViewModel
+import com.example.viewmodel.TORCH_REASON_PERMISSION
+import com.example.viewmodel.TorchState
 import com.example.viewmodel.VippattiViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -75,7 +100,49 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
+    // Application context for auth storage: the repository outlives any single
+    // Activity instance (retained by AuthGateViewModel across rotation), so it
+    // must never hold the destroyed Activity.
+    val appContext = applicationContext
     setContent {
+      val context = LocalContext.current
+
+      // Local offline auth gate: seeded demo account + stay-signed-in session
+      // (see AuthRepository). No network, no Google accounts — deliberately.
+      // The repository lives in an activity-scoped ViewModel (NOT remember):
+      // remember {} is rebuilt on every Activity recreation, which dropped the
+      // in-process session flag and bounced stay-signed-out users back to the
+      // login screen on every rotation. The ViewModel survives recreation, so
+      // rotation keeps the session; process death still re-reads the store.
+      val authGate: AuthGateViewModel = viewModel(
+        factory = object : ViewModelProvider.Factory {
+          @Suppress("UNCHECKED_CAST")
+          override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            AuthGateViewModel(
+              AuthRepository(SharedPrefsAuthStorage(appContext)).apply { seedDemoAccount() }
+            ) as T
+        }
+      )
+      val authRepository = authGate.repository
+      var signedIn by remember { mutableStateOf(authGate.isSignedIn()) }
+      // First-run onboarding: shown once, before the auth gate, and never
+      // again once completed. Signed-in sessions skip it entirely. The flag
+      // is written only on skip / sign-in / final-page completion, never for
+      // page changes (see OnboardingCompletion).
+      val onboardingStore = remember {
+        com.example.ui.screens.OnboardingCompletion(
+          appContext.getSharedPreferences(
+            com.example.ui.screens.OnboardingCompletion.PREFS_NAME,
+            MODE_PRIVATE
+          )
+        )
+      }
+      var onboardingDone by remember { mutableStateOf(onboardingStore.isCompleted()) }
+      val completeOnboarding = {
+        onboardingStore.setCompleted()
+        onboardingDone = true
+      }
+
       // Production ViewModel: file-backed GNews cache AND file-backed disaster
       // provider shards survive app restarts; the osmdroid tile-cache dir feeds
       // the REAL offline map-cache size shown on the Profile screen.
@@ -86,14 +153,65 @@ class MainActivity : ComponentActivity() {
             VippattiViewModel(
               newsCache = NewsFileCache(File(cacheDir, "news_cache")),
               disasterCache = DisasterFileCache(File(cacheDir, "disaster_cache")),
-              tileCacheDirProvider = { File(cacheDir, "osmdroid/tiles") }
+              tileCacheDirProvider = { File(cacheDir, "osmdroid/tiles") },
+              // Dynamic-data rule: district/state names for news scoping are
+              // resolved from the device's own coordinates at runtime.
+              placeResolver = AndroidGeocoderPlaceResolver(applicationContext),
+              // HISTORICAL DISASTER INTELLIGENCE (EM-DAT). The prepared archive
+              // ships as an app asset - no network call, and never reported as
+              // a live feed. A missing asset yields an honest UNAVAILABLE state.
+              historicalProvider = com.example.data.historical.BundledHistoricalDataProvider(
+                reader = { assetName ->
+                  try {
+                    applicationContext.assets.open(assetName)
+                      .bufferedReader()
+                      .use { it.readText() }
+                  } catch (_: Exception) {
+                    null
+                  }
+                }
+              )
             ) as T
         }
       )
       val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
       VippattiTheme(darkTheme = uiState.isDarkTheme) {
-        VippattiAppRoot(viewModel = viewModel)
+        // HISTORICAL (EM-DAT) record sheet. Opened only from the historical
+        // panel or a historical map marker, never from a live hazard marker.
+        uiState.historicalDetailEvent?.let { historical ->
+          com.example.ui.screens.HistoricalEventDetailDialog(
+            event = historical,
+            onDismiss = { viewModel.closeHistoricalEventDetail() }
+          )
+        }
+        if (signedIn) {
+          VippattiAppRoot(
+            viewModel = viewModel,
+            accountEmail = authRepository.currentUserEmail,
+            onSignOut = {
+              authRepository.logout()
+              signedIn = false
+            }
+          )
+        } else if (!onboardingDone) {
+          com.example.ui.screens.OnboardingFlowScreen(
+            onFinish = { completeOnboarding() }
+          )
+        } else {
+          LoginScreen(
+            onLogin = { email, password, staySignedIn ->
+              authRepository.login(email, password, staySignedIn).also {
+                if (it.ok) signedIn = true
+              }
+            },
+            onRegister = { email, password, staySignedIn ->
+              authRepository.register(email, password, staySignedIn).also {
+                if (it.ok) signedIn = true
+              }
+            }
+          )
+        }
       }
     }
   }
@@ -102,6 +220,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun VippattiAppRoot(
   viewModel: VippattiViewModel,
+  accountEmail: String? = null,
+  onSignOut: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -128,20 +248,72 @@ fun VippattiAppRoot(
     onDispose { context.unregisterReceiver(receiver) }
   }
 
-  // Real Hardware Flashlight Controller
-  LaunchedEffect(uiState.isFlashlightOn) {
-    try {
-      val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
-      val cameraId = cameraManager?.cameraIdList?.firstOrNull()
-      if (cameraId != null) {
-        cameraManager.setTorchMode(cameraId, uiState.isFlashlightOn)
-      }
-    } catch (e: Exception) {
-      // Ignored if device lacks flash hardware or is camera-restricted
+  // ------------------------------------------------------------------ torch
+  // Real hardware torch with an EXPLICIT, honest result path: the CAMERA
+  // permission is requested on first use (it used to be declared but never
+  // requested, so setTorchMode threw SecurityException into an empty catch and
+  // the button silently did nothing while still reporting "ON"), the flash unit
+  // is checked for existence, and the outcome is reported back to the ViewModel.
+  var torchRetryKey by remember { mutableStateOf(0) }
+  var cameraPermissionAsked by remember { mutableStateOf(false) }
+
+  val cameraPermissionLauncher = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestPermission()
+  ) { granted ->
+    if (granted) {
+      torchRetryKey++ // retry the torch now that the permission exists
+    } else {
+      viewModel.onTorchResult(false, TORCH_REASON_PERMISSION, permissionDenied = true)
     }
   }
 
-  // Real SOS Alarm Siren Audio Generator
+  LaunchedEffect(uiState.torchState, torchRetryKey) {
+    val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
+    if (uiState.torchState != TorchState.ON) {
+      // OFF / UNAVAILABLE / PERMISSION_DENIED: make sure the hardware is really
+      // off, so a denied request never leaves a stale torch burning.
+      runCatching {
+        cameraManager?.cameraIdList?.firstOrNull()?.let { id ->
+          cameraManager.setTorchMode(id, false)
+        }
+      }
+      return@LaunchedEffect
+    }
+    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+      PackageManager.PERMISSION_GRANTED
+    if (!granted) {
+      if (!cameraPermissionAsked) {
+        cameraPermissionAsked = true
+        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+      } else {
+        viewModel.onTorchResult(false, TORCH_REASON_PERMISSION, permissionDenied = true)
+      }
+      return@LaunchedEffect
+    }
+    if (cameraManager == null) {
+      viewModel.onTorchResult(false, "Camera service is unavailable on this device.")
+      return@LaunchedEffect
+    }
+    val flashCameraId = cameraManager.cameraIdList.firstOrNull { id ->
+      runCatching {
+        cameraManager.getCameraCharacteristics(id)
+          .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+      }.getOrDefault(false)
+    }
+    if (flashCameraId == null) {
+      viewModel.onTorchResult(false, "This device has no flash unit.")
+      return@LaunchedEffect
+    }
+    val turnedOn = runCatching { cameraManager.setTorchMode(flashCameraId, true) }.isSuccess
+    viewModel.onTorchResult(
+      turnedOn,
+      if (turnedOn) null else "The camera service refused to switch the torch on."
+    )
+  }
+
+  // Real SOS alarm siren, tied to the EXPLICIT sirenState. The ViewModel owns the
+  // visible countdown + hard auto-stop, so the tone always ends when the state
+  // returns to IDLE (and a Stop is reachable from every tab via ActiveToolsBar).
   LaunchedEffect(uiState.isSirenOn) {
     if (uiState.isSirenOn) {
       withContext(Dispatchers.IO) {
@@ -177,11 +349,20 @@ fun VippattiAppRoot(
   // Measure the REAL osmdroid tile-cache size for the Profile honesty card.
   LaunchedEffect(Unit) { viewModel.updateTileCacheBytes() }
 
+  // Single-slot, explicitly short snackbar.
+  // The previous version suspended on showSnackbar and only cleared the state
+  // afterwards, so the message stayed non-null while visible — and re-appeared
+  // after an Activity recreation (rotation). It is now consumed immediately, any
+  // previous message is dismissed first (never queued), and it always expires.
   LaunchedEffect(uiState.snackbarMessage) {
-    uiState.snackbarMessage?.let { message ->
-      snackbarHostState.showSnackbar(message)
-      viewModel.clearSnackbar()
-    }
+    val message = uiState.snackbarMessage ?: return@LaunchedEffect
+    viewModel.clearSnackbar()
+    snackbarHostState.currentSnackbarData?.dismiss()
+    snackbarHostState.showSnackbar(
+      message = message,
+      duration = SnackbarDuration.Short,
+      withDismissAction = true
+    )
   }
 
   // REAL TextToSpeech engine — speaks the bulletin the ViewModel composed from
@@ -193,6 +374,7 @@ fun VippattiAppRoot(
     onDispose {
       ttsEngine.stop()
       ttsEngine.shutdown()
+      if (uiState.isAudioPlaying) viewModel.onTtsBulletinFinished()
     }
   }
   LaunchedEffect(uiState.isAudioPlaying, uiState.audioBulletinText, ttsStatus) {
@@ -216,6 +398,16 @@ fun VippattiAppRoot(
       }
       null -> Unit // Engine still initializing — this effect re-runs when ttsStatus arrives.
       else -> viewModel.onTtsUnavailable()
+    }
+  }
+
+  // The only real way to reach help from this build: open the dialer on 112.
+  // Both SOS dialogs and the active-tools bar reuse it.
+  val dialEmergencyServices: () -> Unit = {
+    try {
+      context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:112")))
+    } catch (e: Exception) {
+      Toast.makeText(context, "Cannot open the dialer: ${e.message}", Toast.LENGTH_SHORT).show()
     }
   }
 
@@ -265,6 +457,14 @@ fun VippattiAppRoot(
                 )
             }
 
+            // Global device-tool status with a real Stop, visible on EVERY tab, so a
+            // running siren/torch (or an armed local SOS) is always dismissible.
+            ActiveToolsBar(
+              uiState = uiState,
+              onStopDeviceTools = { viewModel.stopAllDeviceTools() },
+              onCancelSos = { viewModel.cancelSosBroadcast() }
+            )
+
             // Screen Content
             Box(modifier = Modifier.weight(1f)) {
                 when (tab) {
@@ -274,7 +474,11 @@ fun VippattiAppRoot(
             onToggleAudio = { viewModel.toggleAudioBulletin() },
             onSelectCategory = { viewModel.setNewsCategory(it) },
             onNavigateToEvacRoute = { viewModel.startEvacuationRoute() },
-            onNavigateTab = { viewModel.setTab(it) }
+            onNavigateTab = { viewModel.setTab(it) },
+            onToggleHistoricalLayer = { viewModel.toggleHistoricalLayer() },
+            onHistoricalFiltersChange = { viewModel.setHistoricalFilters(it) },
+            onClearHistoricalFilters = { viewModel.clearHistoricalFilters() },
+            onSelectHistoricalEvent = { viewModel.openHistoricalEventDetail(it) }
           )
 
           ScreenTab.          RADAR_MAP -> RadarMapScreen(
@@ -295,12 +499,12 @@ fun VippattiAppRoot(
             // REAL disaster-data integration: layers, incident reports, event details.
             onToggleLayer = { viewModel.toggleLayer(it) },
             onOpenIncidentReport = { viewModel.openIncidentReportDialog() },
-            onSubmitIncidentReport = { category, severity, description ->
-              viewModel.submitIncidentReport(category, severity, description)
-            },
             onOpenDisasterEventDetail = { viewModel.openDisasterEventDetail(it) },
-            onDismissDisasterEventDetail = { viewModel.closeDisasterEventDetail() },
-            onToggleMockData = { viewModel.toggleMockData() }
+            onOpenHistoricalEventDetail = { viewModel.openHistoricalEventDetail(it) },
+            onToggleMockData = { viewModel.toggleMockData() },
+            onRequestFallbackRoute = { viewModel.requestOfflineFallbackRoute() },
+            // PHASE 3: retry the live Open-Meteo reading without touching the rest.
+            onRetryWeather = { viewModel.refreshWeather(force = true) }
           )
 
           ScreenTab.INSTRUCTIONS -> InstructionsScreen(
@@ -315,6 +519,8 @@ fun VippattiAppRoot(
 
           ScreenTab.PROFILE -> ProfileScreen(
             uiState = uiState,
+            accountEmail = accountEmail,
+            onSignOut = onSignOut,
             onToggleTheme = { viewModel.toggleTheme() },
             onSetSafety = { viewModel.setUserSafety(it) },
             onBroadcastSos = { viewModel.triggerSosBroadcast() },
@@ -335,7 +541,8 @@ fun VippattiAppRoot(
           locationLabel = uiState.sosLocationLabel,
           batteryLabel = uiState.batteryLabel,
           onConfirm = { viewModel.confirmSosBroadcast() },
-          onDismiss = { viewModel.dismissSosConfirmDialog() }
+          onDismiss = { viewModel.dismissSosConfirmDialog() },
+          onCallEmergencyServices = dialEmergencyServices
         )
       }
 
@@ -365,7 +572,8 @@ fun VippattiAppRoot(
           medicalTagLabel = uiState.userProfile.medicalTag,
           relaysLabel = uiState.priorityRelaysLabel,
           onDismiss = { viewModel.dismissSosDialog() },
-          onCancelSos = { viewModel.cancelSosBroadcast() }
+          onCancelSos = { viewModel.cancelSosBroadcast() },
+          onCallEmergencyServices = dialEmergencyServices
         )
       }
 
@@ -422,7 +630,9 @@ fun VippattiAppRoot(
           zone = shelter,
           evaluation = uiState.selectedEvaluation?.takeIf { it.zone.id == shelter.id },
           onDismiss = { viewModel.closeSafeZoneDetail() },
-          onSelectAndRoute = { viewModel.selectSafeZone(shelter) }
+          onSelectAndRoute = { viewModel.selectSafeZone(shelter) },
+          // Carrying-capacity verdict for THIS site (null when not assessed).
+          capacityAssessment = uiState.capacityAssessments[shelter.id]
         )
       }
       if (uiState.showAddContactDialog) {
@@ -433,6 +643,90 @@ fun VippattiAppRoot(
           }
         )
       }
+    }
+  }
+}
+
+/**
+ * Always-visible device-tool status with a real Stop action.
+ *
+ * This replaces the old snackbar-only feedback for Light/Siren, which left a
+ * running siren (60 s) or torch (indefinite) with no way to switch it off from
+ * any tab other than Instructions — the "popup that cannot be dismissed" report.
+ * It is compact, non-blocking and disappears the moment nothing is active.
+ */
+@Composable
+internal fun ActiveToolsBar(
+  uiState: com.example.viewmodel.VippattiUiState,
+  onStopDeviceTools: () -> Unit,
+  onCancelSos: () -> Unit
+) {
+  val sirenOn = uiState.isSirenOn
+  val torchOn = uiState.isFlashlightOn
+  val sosActive = uiState.isSosActive
+  if (!sirenOn && !torchOn && !sosActive) return
+
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .background(EmergencyRed.copy(alpha = 0.14f))
+      .padding(horizontal = 12.dp, vertical = 6.dp),
+    verticalArrangement = Arrangement.spacedBy(4.dp)
+  ) {
+    if (sirenOn) {
+      ToolStatusRow(
+        label = "SOS SIREN ACTIVE",
+        detail = "Auto-stops in ${uiState.sirenSecondsLeft}s",
+        onStop = onStopDeviceTools,
+        testTag = "active_tool_siren_stop"
+      )
+    }
+    if (torchOn) {
+      ToolStatusRow(
+        label = "FLASHLIGHT ON",
+        detail = "Torch is running — tap STOP to switch it off",
+        onStop = onStopDeviceTools,
+        testTag = "active_tool_torch_stop"
+      )
+    }
+    if (sosActive) {
+      ToolStatusRow(
+        label = "LOCAL SOS RECORD ACTIVE",
+        detail = "Not transmitted — no authority has been notified",
+        onStop = onCancelSos,
+        testTag = "active_tool_sos_stop"
+      )
+    }
+  }
+}
+
+@Composable
+private fun ToolStatusRow(
+  label: String,
+  detail: String,
+  onStop: () -> Unit,
+  testTag: String
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.SpaceBetween
+  ) {
+    Column(modifier = Modifier.padding(end = 8.dp)) {
+      Text(
+        text = label,
+        color = EmergencyRed,
+        fontWeight = androidx.compose.ui.text.font.FontWeight.Black,
+        fontSize = 12.sp
+      )
+      Text(
+        text = detail,
+        color = TacticalOnSurface,
+        fontSize = 12.sp
+      )
+    }
+    TextButton(onClick = onStop, modifier = Modifier.testTag(testTag)) {
+      Text("STOP", color = EmergencyRed, fontWeight = androidx.compose.ui.text.font.FontWeight.Black)
     }
   }
 }

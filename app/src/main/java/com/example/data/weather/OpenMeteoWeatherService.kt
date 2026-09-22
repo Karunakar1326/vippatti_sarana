@@ -1,13 +1,17 @@
 package com.example.data.weather
 
-import com.example.data.WeatherMetrics
+import com.example.data.disaster.WeatherMetrics
 import com.example.data.routing.GeoPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import java.io.InterruptedIOException
+import java.io.IOException
+import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
@@ -16,43 +20,79 @@ import kotlin.math.abs
  * as the USGS/FIRMS/IMD providers): current temperature, precipitation,
  * wind and a real 3-hour temperature trend for the radar bottom bar.
  *
- * Any failure (offline, timeout, bad payload) yields null and the UI keeps
- * its honest empty state — weather is never invented.
+ * PHASE 3: a fetch now returns a [WeatherReading] so the UI can distinguish
+ * "could not reach the service" from "the service answered with an error" from
+ * "the payload had no live reading". A failure never yields invented values —
+ * the caller keeps whatever real reading it already had (marked STALE) or shows
+ * the honest unavailable state.
+ *
+ * The provider's own observation time (`current.time` + `utc_offset_seconds`)
+ * is carried through to [WeatherMetrics.observedAtMillis]; when it is missing
+ * or unparsable it stays 0L, which the UI renders as "observation time unknown".
  */
 object OpenMeteoWeatherService {
+
+  const val ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 
   private val httpClient: OkHttpClient by lazy {
     OkHttpClient.Builder()
       .connectTimeout(8, TimeUnit.SECONDS)
       .readTimeout(12, TimeUnit.SECONDS)
+      .callTimeout(20, TimeUnit.SECONDS)
       .build()
   }
 
-  suspend fun fetchNow(point: GeoPoint): WeatherMetrics? = withContext(Dispatchers.IO) {
-    val url = "https://api.open-meteo.com/v1/forecast" +
-      "?latitude=${point.lat}&longitude=${point.lon}" +
+  /** Request URL for one coordinate — keyless, metric, provider-local timezone. */
+  fun buildUrl(point: GeoPoint): String =
+    "$ENDPOINT?latitude=${point.lat}&longitude=${point.lon}" +
       "&current=temperature_2m,precipitation,wind_speed_10m" +
       "&hourly=temperature_2m&past_days=1&forecast_days=1" +
       "&temperature_unit=celsius&wind_speed_unit=kmh&timezone=auto"
+
+  /** Fetch a live reading, reporting honestly WHY it failed when it did. */
+  suspend fun fetchReading(point: GeoPoint): WeatherReading = withContext(Dispatchers.IO) {
     try {
       val request = Request.Builder()
-        .url(url)
+        .url(buildUrl(point))
         .header("User-Agent", "VippattiSarana-DisasterRelief/1.0 (Android; Open-Meteo)")
         .build()
       httpClient.newCall(request).execute().use { response ->
-        if (!response.isSuccessful) return@withContext null
+        if (!response.isSuccessful) {
+          return@withContext WeatherReading.Failure(
+            kind = WeatherFailureKind.HTTP_ERROR,
+            detail = "HTTP ${response.code}"
+          )
+        }
         val body = response.body?.string()
-        if (body.isNullOrBlank()) return@withContext null
-        parseResponse(body)
+        if (body.isNullOrBlank()) {
+          return@withContext WeatherReading.Failure(
+            kind = WeatherFailureKind.BAD_PAYLOAD,
+            detail = "empty response body"
+          )
+        }
+        val metrics = parseResponse(body)
+          ?: return@withContext WeatherReading.Failure(
+            kind = WeatherFailureKind.BAD_PAYLOAD,
+            detail = "no live temperature in the payload"
+          )
+        WeatherReading.Success(metrics)
       }
-    } catch (_: Exception) {
-      null
+    } catch (timeout: InterruptedIOException) {
+      WeatherReading.Failure(WeatherFailureKind.TIMEOUT, timeout.message)
+    } catch (offline: IOException) {
+      WeatherReading.Failure(WeatherFailureKind.NO_CONNECTION, offline.message)
+    } catch (unexpected: Exception) {
+      WeatherReading.Failure(
+        kind = WeatherFailureKind.REQUEST_FAILED,
+        detail = unexpected::class.java.simpleName
+      )
     }
   }
 
   /**
-   * Pure payload parser (unit-testable): current block -> temp/rain/wind,
-   * hourly series -> 3-hour trend. Null when the payload lacks live values.
+   * Pure payload parser (unit-testable): current block -> temp/rain/wind and
+   * the provider observation time, hourly series -> 3-hour trend. Null when the
+   * payload lacks live values.
    */
   fun parseResponse(body: String): WeatherMetrics? {
     return try {
@@ -70,10 +110,31 @@ object OpenMeteoWeatherService {
         rainfallIntensity = String.format(Locale.US, "%.1f mm/h", precip),
         windGust = if (wind.isNaN()) "" else String.format(Locale.US, "%.0f km/h", wind),
         trend3h = trend,
-        surgeForecast = ""
+        surgeForecast = "",
+        observedAtMillis = observationEpochMillis(
+          localTime = current.optString("time", ""),
+          utcOffsetSeconds = root.optInt("utc_offset_seconds", Int.MIN_VALUE)
+        )
       )
     } catch (_: Exception) {
       null
+    }
+  }
+
+  /**
+   * Open-Meteo returns `current.time` as local wall-clock ("2026-09-20T07:45")
+   * plus the zone offset in seconds. Returns the real epoch millis, or 0L when
+   * either piece is missing or unparsable — never a guessed timestamp.
+   */
+  private fun observationEpochMillis(localTime: String, utcOffsetSeconds: Int): Long {
+    if (localTime.isBlank() || utcOffsetSeconds == Int.MIN_VALUE) return 0L
+    return try {
+      val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm", Locale.US)
+      format.timeZone = TimeZone.getTimeZone("UTC")
+      val asIfUtc = format.parse(localTime)?.time ?: return 0L
+      asIfUtc - utcOffsetSeconds * 1000L
+    } catch (_: Exception) {
+      0L
     }
   }
 

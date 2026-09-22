@@ -213,7 +213,7 @@ object OsrmRoutingService {
   fun decodeGeoJsonCoordinates(coordsArray: org.json.JSONArray): List<GeoPoint> =
     buildList {
       for (i in 0 until coordsArray.length()) {
-        val pt = coordsArray.getJSONArray(i)
+        val pt = coordsArray.optJSONArray(i) ?: continue
         add(GeoPoint(pt.getDouble(1), pt.getDouble(0)))
       }
     }
@@ -276,7 +276,7 @@ object OsrmRoutingService {
       val routes = json.optJSONArray("routes") ?: return null
       buildList {
         for (i in 0 until routes.length().coerceAtMost(wantAlternatives)) {
-          add(parseOsrmRoute(routes.getJSONObject(i), mode, hazards, destinationName))
+          parseOsrmRoute(routes.getJSONObject(i), mode, hazards, destinationName)?.let(::add)
         }
       }
     }
@@ -322,12 +322,13 @@ object OsrmRoutingService {
     mode: String,
     hazards: List<HazardZone>,
     destinationName: String
-  ): RouteResult {
+  ): RouteResult? {
     val distance = routeObj.optDouble("distance", 0.0)
     val duration = routeObj.optDouble("duration", 0.0)
 
-    val geometry = routeObj.getJSONObject("geometry")
-    val points = decodeGeoJsonCoordinates(geometry.getJSONArray("coordinates"))
+    val geometry = routeObj.optJSONObject("geometry") ?: return null
+    val coordinates = geometry.optJSONArray("coordinates") ?: return null
+    val points = decodeGeoJsonCoordinates(coordinates)
 
     val stepsList = mutableListOf<RouteStep>()
     val legs = routeObj.optJSONArray("legs")
@@ -534,10 +535,8 @@ object OsrmRoutingService {
   }
 
   /**
-   * Standard Haversine distance (kept as the public convenience metric).
+   * Standard Haversine distance.
    */
-  fun haversineDistanceMeters(p1: GeoPoint, p2: GeoPoint): Double = GeoMath.distanceMeters(p1, p2)
-
   fun formatDistance(meters: Double): String = GeoMath.formatKm(meters)
 
   fun formatDuration(seconds: Double): String {

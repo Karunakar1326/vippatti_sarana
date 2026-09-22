@@ -40,28 +40,6 @@ object ShelterCapacityService {
     status = zone.capacityStatus
   )
 
-  fun reportAll(zones: List<SafeZone>): List<CapacityReport> = zones.map { report(it) }
-
-  /**
-   * Network-wide capacity summary for relocation planning:
-   * how many people the shelter network can still absorb right now.
-   */
-  data class NetworkCapacitySummary(
-    val totalCapacity: Int,
-    val totalOccupancy: Int,
-    val totalAvailable: Int,
-    val openShelterCount: Int,
-    val fullShelterCount: Int
-  )
-
-  fun networkSummary(zones: List<SafeZone>): NetworkCapacitySummary = NetworkCapacitySummary(
-    totalCapacity = zones.sumOf { it.capacityTotal },
-    totalOccupancy = zones.sumOf { it.capacityCurrent },
-    totalAvailable = zones.sumOf { it.availableCapacity },
-    openShelterCount = zones.count { it.capacityStatus != CapacityStatus.FULL },
-    fullShelterCount = zones.count { it.capacityStatus == CapacityStatus.FULL }
-  )
-
   /**
    * Overflow recommendation: when the primary shelter is full, the nearest
    * shelter with meaningful remaining capacity is suggested as the overflow
@@ -92,15 +70,6 @@ object ShelterCapacityService {
     val overflowShelter: SafeZone,
     val redistributionNote: String
   )
-
-  /**
-   * Shelter load balancing: rank shelters by available capacity headroom so a
-   * surge of evacuees spreads across the network instead of overloading one
-   * shelter. Prepared for population redistribution planning; uses current
-   * stored occupancy only.
-   */
-  fun loadBalancedOrder(zones: List<SafeZone>): List<SafeZone> =
-    zones.sortedByDescending { it.availableCapacity }
 
   /**
    * Predicted capacity pressure once [incomingPeople] more evacuees arrive at

@@ -1,6 +1,5 @@
 package com.example.data.risk
 
-import com.example.data.hazards.HazardAnalysisService
 import com.example.data.model.GeoMath
 import com.example.data.model.HazardSeverity
 import com.example.data.model.HazardTrend
@@ -62,7 +61,7 @@ object RiskAssessmentEngine {
         val nearest = HazardAnalysisService.nearestHazard(location, hazards)
         if (nearest != null) {
           "No active hazard covers your location. Nearest watched area is " +
-            "${primary?.name ?: nearest.hazard.name} about ${GeoMath.formatKm(nearest.distanceToCenterMeters)} away."
+            "${nearest.hazard.name} about ${GeoMath.formatKm(nearest.distanceToCenterMeters)} away."
         } else {
           "No active hazard covers your location on the current hazard picture."
         }

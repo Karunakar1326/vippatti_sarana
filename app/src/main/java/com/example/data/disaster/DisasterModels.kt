@@ -42,7 +42,7 @@ enum class DisasterSource(val label: String) {
 }
 
 /** Geographic representation kinds supported by the pipeline. */
-enum class GeometryType { POINT, MULTIPOINT, LINE, POLYGON, RASTER_LAYER }
+enum class GeometryType { POINT, MULTIPOINT, LINE, POLYGON, RASTER_LAYER, UNLOCATED }
 
 /** How the event data was produced (displayed as data type / provenance). */
 enum class EventOrigin(val label: String) {
@@ -98,6 +98,17 @@ sealed class EventGeometry {
   /** Reserved for providers exposing raster/GIS layers rather than records. */
   data class RasterLayer(val layerId: String, val title: String) : EventGeometry() {
     override val type get() = GeometryType.RASTER_LAYER
+  }
+
+  /**
+   * A real record the source published WITHOUT usable geometry (e.g. an IMD CAP
+   * alert with no `<polygon>`). It carries the provider's own area text and no
+   * coordinates: such a record is never pinned to a placeholder point, is never
+   * drawn on the map and produces no local hazard zone - it stays visible as an
+   * official alert with its stated area instead.
+   */
+  data class Unlocated(val areaLabel: String?) : EventGeometry() {
+    override val type get() = GeometryType.UNLOCATED
   }
 }
 
@@ -214,35 +225,11 @@ object IndiaGeo {
   /** National map default view — the whole of India, NOT any pilot district. */
   const val CENTER_LAT = 20.5937
   const val CENTER_LON = 78.9629
-  const val OVERVIEW_ZOOM = 4.9
-
-  /** Pilot region coverage circle (Idukki district, Kerala). */
-  const val PILOT_CENTER_LAT = 9.84778
-  const val PILOT_CENTER_LON = 76.94222
-  const val PILOT_COVERAGE_RADIUS_METERS = 80_000.0
 
   fun contains(lat: Double, lon: Double): Boolean =
     lat in MIN_LAT..MAX_LAT && lon in MIN_LON..MAX_LON
 
   fun contains(point: GeoPoint): Boolean = contains(point.lat, point.lon)
-
-  fun isPointInIndia(geometry: EventGeometry): Boolean = when (geometry) {
-    is EventGeometry.Point -> contains(geometry.lat, geometry.lon)
-    is EventGeometry.MultiPoint -> geometry.points.any { contains(it) }
-    is EventGeometry.Line -> geometry.points.any { contains(it) }
-    is EventGeometry.Polygon -> geometry.ring.any { contains(it) }
-    is EventGeometry.RasterLayer -> false
-  }
-
-  /** True when [point] lies inside the pilot safe-zone coverage circle. */
-  fun isWithinPilotCoverage(point: GeoPoint): Boolean {
-    val dLat = point.lat - PILOT_CENTER_LAT
-    val dLon = point.lon - PILOT_CENTER_LON
-    val latScale = 110_574.0
-    val lonScale = latScale * kotlin.math.cos(Math.toRadians(PILOT_CENTER_LAT))
-    val meters = (dLat * dLat * latScale * latScale + dLon * dLon * lonScale * lonScale)
-    return meters <= PILOT_COVERAGE_RADIUS_METERS * PILOT_COVERAGE_RADIUS_METERS
-  }
 }
 
 // ============================================================================
@@ -266,6 +253,9 @@ object DisasterEventNormalizer {
       event.geometry.points.firstOrNull()?.let { pointZone(event, it.lat, it.lon) }
     is EventGeometry.Polygon -> polygonZone(event, event.geometry.ring)
     is EventGeometry.RasterLayer -> null
+    // No geometry from the source -> no local zone. A national-scale alert must
+    // not become a hazard blob at an invented coordinate.
+    is EventGeometry.Unlocated -> null
   }
 
   private fun pointZone(event: DisasterEvent, lat: Double, lon: Double): HazardZone {

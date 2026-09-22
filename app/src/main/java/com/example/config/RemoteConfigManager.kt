@@ -18,59 +18,60 @@ data class AppRemoteConfig(
     val emergencyBannerText: String = "",
     val emergencyBannerEnabled: Boolean = false,
     val featureRadarEnabled: Boolean = true,
-    val featureReportsEnabled: Boolean = true,
     val featureDispatchesEnabled: Boolean = true,
-    val featureSafeZonesEnabled: Boolean = true,
-    val appLogoUrl: String = "",
-    val splashLogoUrl: String = ""
+    val appLogoUrl: String = ""
 )
 
 class RemoteConfigManager {
-    private val remoteConfig = FirebaseRemoteConfig.getInstance()
     private val _configState = MutableStateFlow(AppRemoteConfig())
     val configState: StateFlow<AppRemoteConfig> = _configState.asStateFlow()
 
-    init {
-        // Use a safe production fetch interval (3600s = 1 hour)
-        val configSettings = FirebaseRemoteConfigSettings.Builder()
-            .setMinimumFetchIntervalInSeconds(3600)
-            .build()
-        remoteConfig.setConfigSettingsAsync(configSettings)
-
-        // Local offline fallbacks
-        val defaults = mapOf(
-            "home_padding" to 0,
-            "primary_color" to "",
-            "secondary_color" to "",
-            "emergency_banner_text" to "",
-            "emergency_banner_enabled" to false,
-            "feature_radar_enabled" to true,
-            "feature_reports_enabled" to true,
-            "feature_dispatches_enabled" to true,
-            "feature_safe_zones_enabled" to true,
-            "app_logo_url" to "",
-            "splash_logo_url" to ""
-        )
-        remoteConfig.setDefaultsAsync(defaults)
-
-        updateState()
-        fetchAndActivate()
-        setupRealtimeUpdates()
+    private val remoteConfig: FirebaseRemoteConfig? = try {
+        FirebaseRemoteConfig.getInstance()
+    } catch (_: IllegalStateException) {
+        Log.w("RemoteConfigManager", "FirebaseApp not initialised; using local defaults")
+        null
     }
 
-    private fun fetchAndActivate() {
-        remoteConfig.fetchAndActivate().addOnCompleteListener { task ->
+    init {
+        val rc = remoteConfig
+        if (rc != null) {
+            val configSettings = FirebaseRemoteConfigSettings.Builder()
+                .setMinimumFetchIntervalInSeconds(3600)
+                .build()
+            rc.setConfigSettingsAsync(configSettings)
+
+            val defaults = mapOf(
+                "home_padding" to 0,
+                "primary_color" to "",
+                "secondary_color" to "",
+                "emergency_banner_text" to "",
+                "emergency_banner_enabled" to false,
+                "feature_radar_enabled" to true,
+                "feature_dispatches_enabled" to true,
+                "app_logo_url" to ""
+            )
+            rc.setDefaultsAsync(defaults)
+
+            updateState(rc)
+            fetchAndActivate(rc)
+            setupRealtimeUpdates(rc)
+        }
+    }
+
+    private fun fetchAndActivate(rc: FirebaseRemoteConfig) {
+        rc.fetchAndActivate().addOnCompleteListener { task ->
             if (task.isSuccessful) {
-                updateState()
+                updateState(rc)
             }
         }
     }
 
-    private fun setupRealtimeUpdates() {
-        remoteConfig.addOnConfigUpdateListener(object : ConfigUpdateListener {
+    private fun setupRealtimeUpdates(rc: FirebaseRemoteConfig) {
+        rc.addOnConfigUpdateListener(object : ConfigUpdateListener {
             override fun onUpdate(configUpdate: ConfigUpdate) {
-                remoteConfig.activate().addOnCompleteListener {
-                    updateState()
+                rc.activate().addOnCompleteListener {
+                    updateState(rc)
                 }
             }
 
@@ -80,20 +81,17 @@ class RemoteConfigManager {
         })
     }
 
-    private fun updateState() {
+    private fun updateState(rc: FirebaseRemoteConfig) {
         _configState.update {
             AppRemoteConfig(
-                homePadding = remoteConfig.getLong("home_padding").toInt(),
-                primaryColorHex = remoteConfig.getString("primary_color"),
-                secondaryColorHex = remoteConfig.getString("secondary_color"),
-                emergencyBannerText = remoteConfig.getString("emergency_banner_text"),
-                emergencyBannerEnabled = remoteConfig.getBoolean("emergency_banner_enabled"),
-                featureRadarEnabled = remoteConfig.getBoolean("feature_radar_enabled"),
-                featureReportsEnabled = remoteConfig.getBoolean("feature_reports_enabled"),
-                featureDispatchesEnabled = remoteConfig.getBoolean("feature_dispatches_enabled"),
-                featureSafeZonesEnabled = remoteConfig.getBoolean("feature_safe_zones_enabled"),
-                appLogoUrl = remoteConfig.getString("app_logo_url"),
-                splashLogoUrl = remoteConfig.getString("splash_logo_url")
+                homePadding = rc.getLong("home_padding").toInt(),
+                primaryColorHex = rc.getString("primary_color"),
+                secondaryColorHex = rc.getString("secondary_color"),
+                emergencyBannerText = rc.getString("emergency_banner_text"),
+                emergencyBannerEnabled = rc.getBoolean("emergency_banner_enabled"),
+                featureRadarEnabled = rc.getBoolean("feature_radar_enabled"),
+                featureDispatchesEnabled = rc.getBoolean("feature_dispatches_enabled"),
+                appLogoUrl = rc.getString("app_logo_url")
             )
         }
     }

@@ -1,8 +1,6 @@
-package com.example.data.disaster
+﻿package com.example.data.disaster
 
-import com.example.data.model.GeoMath
 import com.example.data.model.HazardZone
-import com.example.data.routing.GeoPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -19,16 +17,14 @@ data class ProviderState(
   val fetchedAtMillis: Long,
   val isFromCache: Boolean,
   val isLive: Boolean,
-  val statusMessage: String?
-) {
-  val freshnessLabel: String
-    get() = when {
-      fetchedAtMillis <= 0L -> "Unavailable"
-      isLive -> "Live"
-      isFromCache -> "Cached"
-      else -> "Recent"
-    }
-}
+  val statusMessage: String?,
+  /**
+   * Why this provider returned no fresh data: UNCONFIGURED, AUTHENTICATION_FAILED
+   * or FAILED. Null means the provider answered (AVAILABLE) - the only case in
+   * which a surface may label it live.
+   */
+  val failureKind: ProviderFailureKind? = null
+)
 
 /** Full repository snapshot consumed by the ViewModel + map renderer. */
 data class DisasterFeed(
@@ -40,7 +36,7 @@ data class DisasterFeed(
 
 /**
  * ============================================================================
- * DISASTER DATA REPOSITORY — the single data layer between providers and UI.
+ * DISASTER DATA REPOSITORY â€” the single data layer between providers and UI.
  * ============================================================================
  *
  * Pipeline per provider:
@@ -49,19 +45,21 @@ data class DisasterFeed(
  *
  * LIVE vs MOCK: the repository only ever holds REAL fetched events (plus
  * explicitly submitted user reports). Mock-network hazards are NEVER mixed
- * in here — they remain a separate, clearly labeled concept owned by the
+ * in here â€” they remain a separate, clearly labeled concept owned by the
  * ViewModel (mock toggle).
  */
 class DisasterDataRepository(
   private val providers: List<DisasterDataProvider>,
   private val cache: DisasterCache,
-  private val clock: () -> Long = System::currentTimeMillis
+  private val clock: () -> Long = System::currentTimeMillis,
+  /** Cache I/O dispatcher â€” tests inject the scheduler's dispatcher so runs are deterministic. */
+  private val cacheDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
 ) {
 
   /** Manual sync: query every provider in parallel, update cache, return the merged feed. */
   suspend fun refresh(): DisasterFeed {
     val now = clock()
-    // Fire all provider fetches concurrently — wait time = slowest provider,
+    // Fire all provider fetches concurrently â€” wait time = slowest provider,
     // not the sum (USGS + NASA FIRMS + IMD each have their own client/timeouts).
     val results = coroutineScope {
       providers.map { provider -> async { provider.providerId to provider.fetchIndiaEvents() } }
@@ -76,7 +74,7 @@ class DisasterDataRepository(
           val valid = result.events
             .filter { it.isValid(now) }
             .dedupeBySourceEventId()
-          withContext(Dispatchers.IO) {
+          withContext(cacheDispatcher) {
             cache.write(
               provider.providerId,
               CachedProviderFeed(valid, result.fetchedAtMillis, null)
@@ -89,12 +87,13 @@ class DisasterDataRepository(
             fetchedAtMillis = result.fetchedAtMillis,
             isFromCache = false,
             isLive = DisasterCachePolicy.isFresh(result.fetchedAtMillis, now),
-            statusMessage = null
+            statusMessage = null,
+            failureKind = null // AVAILABLE: a valid provider response arrived
           )
         }
         is ProviderResult.Failure -> {
           // Offline/auth failure: keep the last valid cached shard (if usable).
-          val cached = withContext(Dispatchers.IO) { cache.read(provider.providerId) }
+          val cached = withContext(cacheDispatcher) { cache.read(provider.providerId) }
           val usable = cached
             ?.takeIf { DisasterCachePolicy.isUsable(it.fetchedAtMillis, now) }
             ?.let { feed ->
@@ -111,7 +110,10 @@ class DisasterDataRepository(
             fetchedAtMillis = usable?.fetchedAtMillis ?: 0L,
             isFromCache = usable != null,
             isLive = false,
-            statusMessage = result.reason
+            statusMessage = result.reason,
+            // The provider's own classification travels with the state so the
+            // UI can separate "not configured" from "rejected" from "failed".
+            failureKind = result.kind
           )
         }
       }
@@ -127,7 +129,7 @@ class DisasterDataRepository(
   /**
    * Cold start: serve usable cached shards instantly (offline survival); a
    * fresh (< 15 min) cache avoids network entirely (quota/battery friendly).
-   * Returns null when nothing usable is cached — the ViewModel then fetches.
+   * Returns null when nothing usable is cached â€” the ViewModel then fetches.
    */
   suspend fun loadCachedOnly(): DisasterFeed? {
     val now = clock()
@@ -135,7 +137,7 @@ class DisasterDataRepository(
     val allEvents = mutableListOf<DisasterEvent>()
     var anyFresh = false
     for (provider in providers) {
-      val cached = withContext(Dispatchers.IO) { cache.read(provider.providerId) }
+      val cached = withContext(cacheDispatcher) { cache.read(provider.providerId) }
       val usable = cached?.takeIf { DisasterCachePolicy.isUsable(it.fetchedAtMillis, now) }
       if (usable != null) {
         val valid = usable.events.filter { it.isValid(now) }.dedupeBySourceEventId()
@@ -190,36 +192,4 @@ fun List<DisasterEvent>.dedupeBySourceEventId(): List<DisasterEvent> {
 /** Hazard zones for the risk/evaluator/routing engines (live events only). */
 fun toHazardZones(events: List<DisasterEvent>): List<HazardZone> =
   events.mapNotNull { DisasterEventNormalizer.toHazardZone(it) }
-
-/** Bounding-box query over in-memory events (map geographic filtering). */
-fun List<DisasterEvent>.inBounds(
-  minLat: Double, minLon: Double, maxLat: Double, maxLon: Double
-): List<DisasterEvent> = filter { event ->
-  when (val g = event.geometry) {
-    is EventGeometry.Point -> g.lat in minLat..maxLat && g.lon in minLon..maxLon
-    is EventGeometry.MultiPoint -> g.points.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.Line -> g.points.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.Polygon -> g.ring.any {
-      it.lat in minLat..maxLat && it.lon in minLon..maxLon
-    }
-    is EventGeometry.RasterLayer -> false
-  }
-}
-
-/** Radius query over in-memory events (local analysis around the user). */
-fun List<DisasterEvent>.withinRadius(center: GeoPoint, radiusMeters: Double): List<DisasterEvent> =
-  filter { event ->
-    val point = when (val g = event.geometry) {
-      is EventGeometry.Point -> GeoPoint(g.lat, g.lon)
-      is EventGeometry.MultiPoint -> g.points.firstOrNull() ?: return@filter false
-      is EventGeometry.Line -> g.points.firstOrNull() ?: return@filter false
-      is EventGeometry.Polygon -> g.ring.firstOrNull() ?: return@filter false
-      is EventGeometry.RasterLayer -> return@filter false
-    }
-    GeoMath.distanceMeters(center, point) <= radiusMeters
-  }
 
